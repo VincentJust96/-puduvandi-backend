@@ -1,0 +1,82 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: puduvandi
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/puduvandi}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate          # Flyway manages schema; Hibernate only validates
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        default_schema: public
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 3        # DB already has V1-V3 tables (created before Flyway was enabled)
+    locations: classpath:db/migration
+
+# ===== JWT Config =====
+puduvandi:
+  jwt:
+    secret: ${JWT_SECRET:Y2hhbmdlLXRoaXMtc2VjcmV0LWluLXByb2R1Y3Rpb24tZW52aXJvbm1lbnQ=}
+    access-token-expiry-ms: 900000        # 15 minutes
+    refresh-token-expiry-ms: 604800000    # 7 days
+
+  otp:
+    expiry-minutes: 5
+    length: 6
+    mock-enabled: true        # true = always use "123456" (dev mode)
+    mock-otp: "123456"
+
+  commission:
+    default-percentage: 20.0
+
+  storage:
+    upload-dir: ./uploads   # local disk path; swap for S3 bucket in production
+
+  support-phone: "+91-8946095151"
+
+  twilio:
+    account-sid: ${TWILIO_ACCOUNT_SID:}
+    auth-token: ${TWILIO_AUTH_TOKEN:}
+    phone-number: ${TWILIO_PHONE_NUMBER:}
+    whatsapp-number: ${TWILIO_WHATSAPP_NUMBER:}
+
+# ===== Logging =====
+logging:
+  level:
+    com.puduvandi: DEBUG
+    org.springframework.security: INFO
+    org.hibernate.SQL: INFO
+    com.twilio: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# ===== Swagger =====
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Puduvandi Login</title>
+
+<style>
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:Arial, Helvetica, sans-serif;
+}
+
+body{
+    background:#f5f7fa;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+}
+
+.container{
+    width:380px;
+    background:#fff;
+    border-radius:15px;
+    padding:35px;
+    box-shadow:0 8px 25px rgba(0,0,0,.1);
+}
+
+.logo{
+    text-align:center;
+    font-size:34px;
+    font-weight:bold;
+    color:#1E7E34;
+}
+
+.tagline{
+    text-align:center;
+    color:#777;
+    margin-top:8px;
+    margin-bottom:35px;
+}
+
+label{
+    font-size:14px;
+    display:block;
+    margin-bottom:8px;
+}
+
+input{
+    width:100%;
+    padding:14px;
+    border:1px solid #ccc;
+    border-radius:8px;
+    font-size:16px;
+    margin-bottom:18px;
+}
+
+input:focus{
+    outline:none;
+    border-color:#1E7E34;
+}
+
+button{
+    width:100%;
+    padding:14px;
+    border:none;
+    border-radius:8px;
+    background:#1E7E34;
+    color:white;
+    font-size:16px;
+    cursor:pointer;
+}
+
+button:hover{
+    background:#16692b;
+}
+
+#otpSection{
+    display:none;
+}
+
+.message{
+    margin-top:18px;
+    text-align:center;
+    color:#555;
+}
+
+.success{
+    color:green;
+}
+
+.error{
+    color:red;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="logo">Puduvandi</div>
+    <div class="tagline">Rent. Ride. Return.</div>
+
+    <div id="phoneSection">
+
+        <label>Mobile Number</label>
+
+        <input
+            type="tel"
+            id="phone"
+            placeholder="Enter 10-digit mobile number"
+            maxlength="10">
+
+        <button onclick="sendOTP()">
+            Continue
+        </button>
+
+    </div>
+
+    <div id="otpSection">
+
+        <label>Enter OTP</label>
+
+        <input
+            type="text"
+            id="otp"
+            maxlength="6"
+            placeholder="Enter 6-digit OTP">
+
+        <button onclick="verifyOTP()">
+            Verify OTP
+        </button>
+
+    </div>
+
+    <div id="message" class="message"></div>
+
+</div>
+
+<script>
+
+const BASE_URL="http://localhost:8080/api/v1/auth";
+
+async function sendOTP(){
+
+    const phone=document.getElementById("phone").value;
+
+    if(phone.length!==10){
+        showMessage("Enter valid mobile number",true);
+        return;
+    }
+
+    try{
+
+        const response=await fetch(BASE_URL+"/send-otp",{
+
+            method:"POST",
+
+            headers:{
+                "Content-Type":"application/json"
+            },
+
+            body:JSON.stringify({
+                phoneNumber:phone
+            })
+
+        });
+
+        const result=await response.json();
+
+        if(response.ok){
+
+            document.getElementById("phoneSection").style.display="none";
+            document.getElementById("otpSection").style.display="block";
+
+            showMessage("OTP sent successfully",false);
+
+        }else{
+
+            showMessage(result.message,true);
+
+        }
+
+    }catch(e){
+
+        showMessage("Cannot connect to backend",true);
+
+    }
+
+}
+
+async function verifyOTP(){
+
+    const phone=document.getElementById("phone").value;
+    const otp=document.getElementById("otp").value;
+
+    try{
+
+        const response=await fetch(BASE_URL+"/verify-otp",{
+
+            method:"POST",
+
+            headers:{
+                "Content-Type":"application/json"
+            },
+
+            body:JSON.stringify({
+
+                phoneNumber:phone,
+                otp:otp
+
+            })
+
+        });
+
+        const result=await response.json();
+
+        if(response.ok){
+
+            localStorage.setItem("token",result.token);
+
+            showMessage("Login Successful ✔",false);
+
+            console.log(result);
+
+            // Redirect Example
+            // window.location.href="dashboard.html";
+
+        }else{
+
+            showMessage(result.message,true);
+
+        }
+
+    }catch(e){
+
+        showMessage("Cannot connect to backend",true);
+
+    }
+
+}
+
+function showMessage(msg,error){
+
+    const message=document.getElementById("message");
+
+    message.innerHTML=msg;
+
+    if(error){
+
+        message.className="message error";
+
+    }else{
+
+        message.className="message success";
+
+    }
+
+}
+
+</script>
+
+</body>
+</html>

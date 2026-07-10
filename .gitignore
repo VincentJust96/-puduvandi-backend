@@ -1,0 +1,21 @@
+# Build output
+target/
+*.class
+
+# Logs
+*.log
+
+# Runtime uploaded files
+uploads/*
+!uploads/.gitkeep
+
+# IDE
+.idea/
+*.iml
+
+# Local Claude Code settings (personal machine config)
+.claude/settings.local.json
+
+# Env files
+.env
+*.env.local
