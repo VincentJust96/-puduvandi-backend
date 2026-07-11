@@ -15,6 +15,7 @@ import com.puduvandi.config.OtpProperties;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.exception.UnauthorizedException;
+import com.puduvandi.notification.service.NotificationService;
 import com.puduvandi.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,9 +37,12 @@ public class AuthService {
     private final JwtUtil jwtUtil;
     private final JwtProperties jwtProperties;
     private final OtpProperties otpProperties;
+    private final NotificationService notificationService;
 
     /**
-     * Generates and sends (mocked) OTP to the given phone number.
+     * Generates and sends an OTP to the given phone number.
+     * mock-enabled=true: code is always mockOtp and only logged (no SMS sent).
+     * mock-enabled=false: a real random code is generated and sent via Twilio SMS.
      * Creates a new user with null role if not already registered.
      * The user selects CUSTOMER or OWNER after OTP verification.
      */
@@ -67,7 +71,15 @@ public class AuthService {
                 .build();
 
         otpRecordRepository.save(otpRecord);
-        log.info("OTP for {} : {} (mock={})", request.phoneNumber(), otpCode, otpProperties.isMockEnabled());
+
+        if (otpProperties.isMockEnabled()) {
+            log.info("OTP for {} : {} (mock=true)", request.phoneNumber(), otpCode);
+        } else {
+            notificationService.sendSMS(null, request.phoneNumber(),
+                    "Your Puduvandi login OTP is " + otpCode + ". Valid for "
+                            + otpProperties.getExpiryMinutes() + " minutes. Do not share this with anyone.");
+            log.info("OTP SMS queued for {}", request.phoneNumber());
+        }
     }
 
     /**

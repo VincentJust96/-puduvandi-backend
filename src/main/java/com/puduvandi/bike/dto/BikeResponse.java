@@ -30,5 +30,6 @@ public record BikeResponse(
     List<String> imageUrls,
     LocalDateTime createdAt,
     BigDecimal latitude,
-    BigDecimal longitude
+    BigDecimal longitude,
+    String area
 ) {}

@@ -25,6 +25,8 @@ import com.puduvandi.owner.dto.CompleteOwnerProfileRequest;
 import com.puduvandi.owner.dto.OwnerProfileResponse;
 import com.puduvandi.owner.entity.OwnerProfile;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
+import com.puduvandi.user.entity.UserDocument;
+import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -46,6 +48,7 @@ public class AdminService {
     private final BookingRepository bookingRepository;
     private final CommissionSettingsRepository commissionSettingsRepository;
     private final DeliverySettingsRepository deliverySettingsRepository;
+    private final UserDocumentRepository userDocumentRepository;
 
     // ===== DASHBOARD =====
 
@@ -58,6 +61,9 @@ public class AdminService {
                 .findAllForAdmin(KycStatus.PENDING, PageRequest.of(0, 1)).getTotalElements();
         long pendingBikes   = bikeRepository
                 .findAllForAdmin(BikeVerificationStatus.PENDING, PageRequest.of(0, 1)).getTotalElements();
+        long pendingLicences = userDocumentRepository
+                .findAllForAdmin(DocumentType.DRIVING_LICENSE, DocumentStatus.PENDING, PageRequest.of(0, 1))
+                .getTotalElements();
         long activeBookings = bookingRepository.countByStatusAndDeletedFalse(BookingStatus.CONFIRMED)
                 + bookingRepository.countByStatusAndDeletedFalse(BookingStatus.RIDE_STARTED);
         long completedBookings = bookingRepository.countByStatusAndDeletedFalse(BookingStatus.COMPLETED);
@@ -65,7 +71,7 @@ public class AdminService {
 
         return new AdminDashboardStats(
                 totalCustomers, totalOwners, totalBikes,
-                pendingKyc, pendingBikes,
+                pendingKyc, pendingBikes, pendingLicences,
                 activeBookings, completedBookings, commission
         );
     }
@@ -283,6 +289,63 @@ public class AdminService {
         return bookingRepository.findAllActiveBookings(pageable).map(this::toBookingResponse);
     }
 
+    // ===== DOCUMENTS (driving licence review) =====
+
+    @Transactional(readOnly = true)
+    public Page<AdminUserDocumentResponse> listDocuments(
+            DocumentType documentType, DocumentStatus status, int page, int size) {
+        PageRequest pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
+        return userDocumentRepository.findAllForAdmin(documentType, status, pageable)
+                .map(this::toDocumentResponse);
+    }
+
+    @Transactional
+    public AdminUserDocumentResponse approveDocument(Long documentId) {
+        UserDocument document = findDocument(documentId);
+        if (document.getStatus() != DocumentStatus.PENDING) {
+            throw new BusinessException("Document is not in PENDING state, current state: " + document.getStatus());
+        }
+        document.setStatus(DocumentStatus.APPROVED);
+        document.setRemarks(null);
+        UserDocument saved = userDocumentRepository.save(document);
+        log.info("Admin approved documentId={}", documentId);
+        return toDocumentResponse(saved);
+    }
+
+    @Transactional
+    public AdminUserDocumentResponse rejectDocument(Long documentId, String reason) {
+        UserDocument document = findDocument(documentId);
+        if (document.getStatus() != DocumentStatus.PENDING) {
+            throw new BusinessException("Document is not in PENDING state, current state: " + document.getStatus());
+        }
+        document.setStatus(DocumentStatus.REJECTED);
+        document.setRemarks(reason);
+        UserDocument saved = userDocumentRepository.save(document);
+        log.info("Admin rejected documentId={}, reason={}", documentId, reason);
+        return toDocumentResponse(saved);
+    }
+
+    private UserDocument findDocument(Long documentId) {
+        return userDocumentRepository.findById(documentId)
+                .filter(d -> !d.isDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("UserDocument", documentId));
+    }
+
+    private AdminUserDocumentResponse toDocumentResponse(UserDocument document) {
+        User user = document.getUser();
+        return new AdminUserDocumentResponse(
+                document.getId(),
+                user.getId(),
+                user.getFullName(),
+                user.getPhoneNumber(),
+                document.getDocumentType(),
+                document.getDocumentUrl(),
+                document.getStatus(),
+                document.getRemarks(),
+                document.getCreatedAt()
+        );
+    }
+
     // ===== COMMISSION =====
 
     @Transactional(readOnly = true)
@@ -420,7 +483,8 @@ public class AdminService {
                 imageUrls,
                 bike.getCreatedAt(),
                 bike.getLatitude(),
-                bike.getLongitude()
+                bike.getLongitude(),
+                bike.getArea()
         );
     }
 

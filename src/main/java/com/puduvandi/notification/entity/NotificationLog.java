@@ -25,7 +25,8 @@ public class NotificationLog extends BaseEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "booking_id", nullable = false)
+    /** Null for non-booking sends (e.g. login OTP) */
+    @Column(name = "booking_id")
     private Long bookingId;
 
     @Column(name = "customer_phone", nullable = false, length = 20)

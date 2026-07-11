@@ -185,6 +185,34 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success("Bookings fetched", bookings));
     }
 
+    // ===== DOCUMENTS (driving licence review) =====
+
+    @GetMapping("/documents")
+    @Operation(summary = "List uploaded documents (paginated, filter by type/status)")
+    public ResponseEntity<ApiResponse<Page<AdminUserDocumentResponse>>> listDocuments(
+            @RequestParam(required = false) DocumentType documentType,
+            @RequestParam(required = false) DocumentStatus status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        Page<AdminUserDocumentResponse> documents = adminService.listDocuments(documentType, status, page, size);
+        return ResponseEntity.ok(ApiResponse.success("Documents fetched", documents));
+    }
+
+    @PatchMapping("/documents/{documentId}/approve")
+    @Operation(summary = "Approve an uploaded document")
+    public ResponseEntity<ApiResponse<AdminUserDocumentResponse>> approveDocument(@PathVariable Long documentId) {
+        return ResponseEntity.ok(ApiResponse.success("Document approved", adminService.approveDocument(documentId)));
+    }
+
+    @PatchMapping("/documents/{documentId}/reject")
+    @Operation(summary = "Reject an uploaded document with a reason")
+    public ResponseEntity<ApiResponse<AdminUserDocumentResponse>> rejectDocument(
+            @PathVariable Long documentId,
+            @Valid @RequestBody RejectReasonRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Document rejected", adminService.rejectDocument(documentId, request.reason())));
+    }
+
     // ===== COMMISSION =====
 
     @GetMapping("/commission")

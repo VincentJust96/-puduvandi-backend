@@ -21,5 +21,6 @@ public record UpdateBikeRequest(
     String description,
     List<String> imageUrls,
     BigDecimal latitude,
-    BigDecimal longitude
+    BigDecimal longitude,
+    String area
 ) {}

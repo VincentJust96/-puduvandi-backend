@@ -77,6 +77,7 @@ public class BikeService {
                 .deleted(false)
                 .latitude(request.latitude())
                 .longitude(request.longitude())
+                .area(request.area())
                 .build();
 
         addImagesToNewBike(bike, request.imageUrls());
@@ -114,6 +115,9 @@ public class BikeService {
         if (request.latitude() != null && request.longitude() != null) {
             bike.setLatitude(request.latitude());
             bike.setLongitude(request.longitude());
+        }
+        if (request.area() != null) {
+            bike.setArea(request.area());
         }
 
         // Replace images
@@ -264,7 +268,8 @@ public class BikeService {
                 imageUrls,
                 bike.getCreatedAt(),
                 bike.getLatitude(),
-                bike.getLongitude()
+                bike.getLongitude(),
+                bike.getArea()
         );
     }
 }

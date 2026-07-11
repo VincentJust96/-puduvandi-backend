@@ -13,6 +13,8 @@ import com.puduvandi.common.enums.BikeStatus;
 import com.puduvandi.common.enums.BikeVerificationStatus;
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.DeliveryType;
+import com.puduvandi.common.enums.DocumentStatus;
+import com.puduvandi.common.enums.DocumentType;
 import com.puduvandi.auth.entity.User;
 import com.puduvandi.auth.repository.UserRepository;
 import com.puduvandi.delivery.service.DeliveryService;
@@ -20,6 +22,7 @@ import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.notification.service.BookingConfirmationService;
+import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -57,6 +60,7 @@ public class BookingService {
     private final UserRepository userRepository;
     private final BookingConfirmationService bookingConfirmationService;
     private final DeliveryService deliveryService;
+    private final UserDocumentRepository userDocumentRepository;
 
     @Value("${puduvandi.commission.default-percentage:20.0}")
     private BigDecimal defaultCommissionPercent;
@@ -143,6 +147,13 @@ public class BookingService {
 
         User customer = userRepository.findById(customerId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", customerId));
+
+        if (!userDocumentRepository.existsByUserIdAndDocumentTypeAndStatusAndDeletedFalse(
+                customerId, DocumentType.DRIVING_LICENSE, DocumentStatus.APPROVED)) {
+            throw new BusinessException(
+                    "Your driving licence must be verified before you can book a bike. "
+                    + "Please upload it on your profile page and wait for admin approval.");
+        }
 
         Bike bike = findApprovedAvailableBike(bikeId);
 

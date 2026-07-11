@@ -9,6 +9,7 @@ public record AdminDashboardStats(
     long totalBikes,
     long pendingKycCount,
     long pendingBikeApprovals,
+    long pendingLicenceApprovals,
     long activeBookings,
     long completedBookings,
     double commissionPercent

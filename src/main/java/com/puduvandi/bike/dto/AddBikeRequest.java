@@ -62,6 +62,10 @@ public record AddBikeRequest(
     BigDecimal latitude,
 
     @Schema(example = "79.8589")
-    BigDecimal longitude
+    BigDecimal longitude,
+
+    @NotBlank(message = "Pickup area/locality is required")
+    @Schema(description = "Human-readable pickup locality shown to customers", example = "White Town, Pondicherry")
+    String area
 
 ) {}

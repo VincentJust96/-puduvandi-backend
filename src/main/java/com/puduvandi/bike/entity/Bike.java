@@ -93,4 +93,7 @@ public class Bike extends BaseEntity {
 
     @Column(name = "longitude", precision = 11, scale = 8)
     private BigDecimal longitude;
+
+    @Column(name = "area", length = 150)
+    private String area;
 }
