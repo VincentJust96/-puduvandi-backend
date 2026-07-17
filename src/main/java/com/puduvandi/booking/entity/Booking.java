@@ -77,6 +77,15 @@ public class Booking extends BaseEntity {
     @Column(name = "total_amount", nullable = false, precision = 10, scale = 2)
     private BigDecimal totalAmount;
 
+    /**
+     * Cumulative amount actually paid toward totalAmount so far — 0 until the first
+     * successful payment, 10% under the DEPOSIT plan (balance due before pickup),
+     * or totalAmount under the FULL plan / once the balance is cleared.
+     */
+    @Column(name = "amount_paid", nullable = false, precision = 10, scale = 2)
+    @Builder.Default
+    private BigDecimal amountPaid = BigDecimal.ZERO;
+
     @Column(name = "commission_percent", nullable = false, precision = 5, scale = 2)
     private BigDecimal commissionPercent;
 

@@ -29,12 +29,13 @@ public class PaymentController {
 
     @PostMapping("/order")
     @PreAuthorize("hasRole('CUSTOMER')")
-    @Operation(summary = "Create a Razorpay order covering one or more PAYMENT_PENDING bookings")
+    @Operation(summary = "Create a Razorpay order: DEPOSIT (10%) / FULL for PAYMENT_PENDING bookings, or BALANCE to clear a remaining deposit on a CONFIRMED one")
     public ResponseEntity<ApiResponse<PaymentOrderResponse>> createOrder(
             @AuthenticationPrincipal PuduvandiUserPrincipal principal,
             @Valid @RequestBody CreatePaymentOrderRequest request) {
 
-        PaymentOrderResponse order = paymentService.createOrder(principal.getUserId(), request.bookingIds());
+        PaymentOrderResponse order = paymentService.createOrder(
+                principal.getUserId(), request.bookingIds(), request.paymentType());
         return ResponseEntity.ok(ApiResponse.success("Payment order created", order));
     }
 

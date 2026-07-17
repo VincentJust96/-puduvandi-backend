@@ -25,6 +25,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
@@ -73,6 +74,11 @@ class HandoverOtpServiceTest {
                 .owner(ownerProfile)
                 .deliveryType(DeliveryType.SELF_PICKUP)
                 .status(BookingStatus.CONFIRMED)
+                // Fully paid by default so the existing pickup/return tests below aren't
+                // affected by the payment-gating check — see the dedicated tests further
+                // down for the gating behavior itself.
+                .totalAmount(new BigDecimal("2000.00"))
+                .amountPaid(new BigDecimal("2000.00"))
                 .build();
     }
 
@@ -154,6 +160,49 @@ class HandoverOtpServiceTest {
 
         assertThat(priorOtp.isUsed()).isTrue();
         verify(handoverOtpRepository, times(2)).save(any(HandoverOtp.class)); // prior invalidated + new one
+    }
+
+    @Test
+    @DisplayName("generate PICKUP_SELF: blocked while a DEPOSIT-plan balance is still due")
+    void generate_pickupSelf_balanceDue_shouldThrow() {
+        booking.setAmountPaid(new BigDecimal("200.00")); // 10% deposit paid, 1800 still due
+        when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
+
+        assertThatThrownBy(() -> handoverOtpService.generate(BOOKING_ID, HandoverPurpose.PICKUP_SELF, CUSTOMER_ID))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("balance")
+                .hasMessageContaining("1800");
+
+        verify(handoverOtpRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("generate PICKUP_SELF: allowed once the balance is fully cleared")
+    void generate_pickupSelf_balanceCleared_succeeds() {
+        booking.setAmountPaid(new BigDecimal("2000.00")); // fully paid
+        when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
+        when(handoverOtpRepository.findByBookingIdAndPurposeAndUsedFalse(BOOKING_ID, HandoverPurpose.PICKUP_SELF))
+                .thenReturn(Collections.emptyList());
+        when(handoverOtpRepository.save(any(HandoverOtp.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        HandoverOtpResponse response = handoverOtpService.generate(BOOKING_ID, HandoverPurpose.PICKUP_SELF, CUSTOMER_ID);
+
+        assertThat(response.otp()).matches("\\d{6}");
+    }
+
+    @Test
+    @DisplayName("generate RETURN_SELF: NOT blocked by an outstanding balance (returns aren't gated)")
+    void generate_returnSelf_balanceDue_stillSucceeds() {
+        booking.setStatus(BookingStatus.RETURN_REQUESTED);
+        booking.setAmountPaid(new BigDecimal("200.00")); // balance still due, shouldn't matter for a return
+        when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
+        when(handoverOtpRepository.findByBookingIdAndPurposeAndUsedFalse(BOOKING_ID, HandoverPurpose.RETURN_SELF))
+                .thenReturn(Collections.emptyList());
+        when(handoverOtpRepository.save(any(HandoverOtp.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        HandoverOtpResponse response = handoverOtpService.generate(BOOKING_ID, HandoverPurpose.RETURN_SELF, OWNER_USER_ID);
+
+        assertThat(response.otp()).matches("\\d{6}");
     }
 
     @Test

@@ -297,4 +297,16 @@ public class AdminController {
         DeliveryRateResponse response = adminService.updateDeliveryRate(principal.getUserId(), request);
         return ResponseEntity.ok(ApiResponse.success("Delivery rate updated to ₹" + request.ratePerKm() + "/km", response));
     }
+
+    // ===== LOCAL DATA RESET (DANGER — dev/test only) =====
+
+    @PostMapping("/reset-local-data")
+    @Operation(summary = "DANGER: wipe all owners/customers/partners/bikes/bookings, keep only ADMIN users. " +
+            "Blocked unless PUDUVANDI_ENV is unset or \"local\" — never staging/production.")
+    public ResponseEntity<ApiResponse<AdminDataResetResponse>> resetLocalData(
+            @Valid @RequestBody ResetLocalDataRequest request) {
+
+        AdminDataResetResponse response = adminService.resetLocalData(request.confirmationPhrase());
+        return ResponseEntity.ok(ApiResponse.success("Local data reset complete", response));
+    }
 }

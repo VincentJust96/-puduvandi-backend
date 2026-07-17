@@ -20,6 +20,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -58,6 +59,7 @@ public class HandoverOtpService {
 
         validateDeliveryTypeCompatible(booking, purpose);
         validateBookingStateForPurpose(booking, purpose);
+        validatePaymentComplete(booking, purpose);
 
         Long expectedGeneratorId = generatorExpectedUserId(booking, purpose);
         if (!expectedGeneratorId.equals(requestingUserId)) {
@@ -202,6 +204,26 @@ public class HandoverOtpService {
                 claimedPartnerId(booking.getId()); // throws if not yet claimed
             }
             case RETURN_SELF, RETURN_TO_PARTNER, RETURN_FINAL -> requireBookingStatus(booking, BookingStatus.RETURN_REQUESTED);
+        }
+    }
+
+    /**
+     * A booking booked under the DEPOSIT plan (10% up front) must have its balance cleared
+     * before the bike actually changes hands — gates every pickup-leg purpose (not returns,
+     * which happen after the ride regardless of how it was paid for).
+     */
+    private void validatePaymentComplete(Booking booking, HandoverPurpose purpose) {
+        boolean isPickupLeg = switch (purpose) {
+            case PICKUP_SELF, PICKUP_PARTNER, RECEIVE_PARTNER -> true;
+            case RETURN_SELF, RETURN_TO_PARTNER, RETURN_FINAL -> false;
+        };
+        if (!isPickupLeg) {
+            return;
+        }
+        BigDecimal balanceDue = booking.getTotalAmount().subtract(booking.getAmountPaid());
+        if (balanceDue.compareTo(BigDecimal.ZERO) > 0) {
+            throw new BusinessException(
+                    "The remaining balance of ₹" + balanceDue + " must be paid before pickup.");
         }
     }
 

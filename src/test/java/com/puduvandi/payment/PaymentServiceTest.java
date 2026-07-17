@@ -5,6 +5,7 @@ import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.PaymentStatus;
+import com.puduvandi.common.enums.PaymentType;
 import com.puduvandi.config.RazorpayConfig;
 import com.puduvandi.errorlog.service.ErrorLogService;
 import com.puduvandi.exception.BusinessException;
@@ -31,10 +32,11 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Unit tests for signature verification, idempotency, and the mock-mode guard.
- * Real order creation against Razorpay's API is NOT unit-tested here (would require
- * a live network call) — that's covered by manual/live verification instead, same
- * convention as BookingServiceTransitionTest for createBooking.
+ * Unit tests for signature verification, idempotency, the mock-mode guard, and
+ * the DEPOSIT/FULL/BALANCE payment-plan rules. Real order creation against
+ * Razorpay's API is NOT unit-tested here (would require a live network call)
+ * — that's covered by manual/live verification instead, same convention as
+ * BookingServiceTransitionTest for createBooking.
  * <p>
  * Signatures are computed for real using the documented Razorpay scheme
  * (HMAC-SHA256 of "orderId|paymentId" with the key secret) rather than mocking
@@ -76,6 +78,7 @@ class PaymentServiceTest {
                 .amount(new BigDecimal("650.00"))
                 .currency("INR")
                 .status(PaymentStatus.ORDER_CREATED)
+                .type(PaymentType.FULL)
                 .razorpayOrderId(ORDER_ID)
                 .mock(false)
                 .build();
@@ -91,6 +94,20 @@ class PaymentServiceTest {
         return hex.toString();
     }
 
+    private Booking bookingWithStatus(Long id, BookingStatus status) {
+        return bookingWithStatus(id, status, BigDecimal.ZERO);
+    }
+
+    private Booking bookingWithStatus(Long id, BookingStatus status, BigDecimal amountPaid) {
+        return Booking.builder()
+                .id(id)
+                .bookingReference("PV-20260717-000" + id)
+                .status(status)
+                .totalAmount(new BigDecimal("2000.00"))
+                .amountPaid(amountPaid)
+                .build();
+    }
+
     // ===== createOrder =====
 
     @Test
@@ -98,7 +115,7 @@ class PaymentServiceTest {
     void createOrder_mockEnabled_throws() {
         razorpayConfig.setMockEnabled(true);
 
-        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L)))
+        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L), PaymentType.FULL))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("mock mode");
 
@@ -111,53 +128,117 @@ class PaymentServiceTest {
         when(bookingRepository.findAllByIdInAndCustomer_IdAndDeletedFalse(List.of(10L, 20L), CUSTOMER_ID))
                 .thenReturn(List.of(bookingWithStatus(10L, BookingStatus.PAYMENT_PENDING)));
 
-        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L, 20L)))
+        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L, 20L), PaymentType.FULL))
                 .isInstanceOf(ResourceNotFoundException.class);
 
         verify(paymentRepository, never()).save(any());
     }
 
     @Test
-    @DisplayName("createOrder: a booking that isn't PAYMENT_PENDING is rejected")
-    void createOrder_bookingNotPending_throws() {
+    @DisplayName("createOrder: FULL on a booking that isn't PAYMENT_PENDING is rejected")
+    void createOrder_fullOnNonPending_throws() {
         when(bookingRepository.findAllByIdInAndCustomer_IdAndDeletedFalse(List.of(10L), CUSTOMER_ID))
                 .thenReturn(List.of(bookingWithStatus(10L, BookingStatus.CONFIRMED)));
 
-        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L)))
+        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L), PaymentType.FULL))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("not awaiting payment");
+                .hasMessageContaining("not eligible");
 
         verify(paymentRepository, never()).save(any());
     }
 
-    private Booking bookingWithStatus(Long id, BookingStatus status) {
-        return Booking.builder()
-                .id(id)
-                .bookingReference("PV-20260717-000" + id)
-                .status(status)
-                .totalAmount(new BigDecimal("325.00"))
-                .build();
+    @Test
+    @DisplayName("createOrder: DEPOSIT charges exactly 10% of the booking's total")
+    void createOrder_deposit_chargesTenPercent() {
+        Booking booking = bookingWithStatus(10L, BookingStatus.PAYMENT_PENDING);
+        when(bookingRepository.findAllByIdInAndCustomer_IdAndDeletedFalse(List.of(10L), CUSTOMER_ID))
+                .thenReturn(List.of(booking));
+        when(paymentRepository.save(any(Payment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // mock mode is off but no real Razorpay reachable in a unit test — expect the
+        // order-creation network call to fail past the point where amount is computed;
+        // capture the amount via the saved Payment before that call.
+        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L), PaymentType.DEPOSIT))
+                .isInstanceOf(BusinessException.class);
+
+        verify(paymentRepository, atLeastOnce()).save(argThat(p ->
+                p.getAmount().compareTo(new BigDecimal("200.00")) == 0 && p.getType() == PaymentType.DEPOSIT));
+    }
+
+    @Test
+    @DisplayName("createOrder: BALANCE rejects a booking that isn't CONFIRMED")
+    void createOrder_balanceOnPending_throws() {
+        when(bookingRepository.findAllByIdInAndCustomer_IdAndDeletedFalse(List.of(10L), CUSTOMER_ID))
+                .thenReturn(List.of(bookingWithStatus(10L, BookingStatus.PAYMENT_PENDING)));
+
+        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L), PaymentType.BALANCE))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("not eligible");
+    }
+
+    @Test
+    @DisplayName("createOrder: BALANCE rejects a booking that's already fully paid")
+    void createOrder_balanceAlreadyPaid_throws() {
+        Booking fullyPaid = bookingWithStatus(10L, BookingStatus.CONFIRMED, new BigDecimal("2000.00"));
+        when(bookingRepository.findAllByIdInAndCustomer_IdAndDeletedFalse(List.of(10L), CUSTOMER_ID))
+                .thenReturn(List.of(fullyPaid));
+
+        assertThatThrownBy(() -> paymentService.createOrder(CUSTOMER_ID, List.of(10L), PaymentType.BALANCE))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("already fully paid");
     }
 
     // ===== verifyAndCapture =====
 
     @Test
-    @DisplayName("verifyAndCapture: valid signature marks payment PAID and confirms bookings")
-    void verifyAndCapture_validSignature_confirmsBookings() throws Exception {
+    @DisplayName("verifyAndCapture: FULL payment settles the booking's entire total")
+    void verifyAndCapture_full_settlesEntireTotal() throws Exception {
+        payment.setType(PaymentType.FULL);
+        Booking booking = bookingWithStatus(10L, BookingStatus.PAYMENT_PENDING);
         when(paymentRepository.findByRazorpayOrderId(ORDER_ID)).thenReturn(Optional.of(payment));
-        when(bookingRepository.findAllByPayment_Id(payment.getId()))
-                .thenReturn(List.of(bookingWithStatus(10L, BookingStatus.PAYMENT_PENDING),
-                        bookingWithStatus(11L, BookingStatus.PAYMENT_PENDING)));
+        when(bookingRepository.findAllByPayment_Id(payment.getId())).thenReturn(List.of(booking));
 
         String signature = realSignature(ORDER_ID, RAZORPAY_PAYMENT_ID);
-
         List<Long> confirmed = paymentService.verifyAndCapture(CUSTOMER_ID, ORDER_ID, RAZORPAY_PAYMENT_ID, signature);
 
-        assertThat(confirmed).containsExactlyInAnyOrder(10L, 11L);
+        assertThat(confirmed).containsExactly(10L);
+        assertThat(booking.getAmountPaid()).isEqualByComparingTo("2000.00");
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.PAID);
-        assertThat(payment.getRazorpayPaymentId()).isEqualTo(RAZORPAY_PAYMENT_ID);
-        verify(bookingService).confirmBookingsAfterPayment(List.of(10L, 11L));
-        verify(paymentRepository).save(payment);
+        verify(bookingService).confirmBookingsAfterPayment(List.of(10L));
+    }
+
+    @Test
+    @DisplayName("verifyAndCapture: DEPOSIT settles exactly 10% of the booking's total, leaving a balance")
+    void verifyAndCapture_deposit_settlesTenPercentOnly() throws Exception {
+        payment.setType(PaymentType.DEPOSIT);
+        Booking booking = bookingWithStatus(10L, BookingStatus.PAYMENT_PENDING);
+        when(paymentRepository.findByRazorpayOrderId(ORDER_ID)).thenReturn(Optional.of(payment));
+        when(bookingRepository.findAllByPayment_Id(payment.getId())).thenReturn(List.of(booking));
+
+        String signature = realSignature(ORDER_ID, RAZORPAY_PAYMENT_ID);
+        paymentService.verifyAndCapture(CUSTOMER_ID, ORDER_ID, RAZORPAY_PAYMENT_ID, signature);
+
+        assertThat(booking.getAmountPaid()).isEqualByComparingTo("200.00"); // 10% of 2000
+        BigDecimal balanceDue = booking.getTotalAmount().subtract(booking.getAmountPaid());
+        assertThat(balanceDue).isEqualByComparingTo("1800.00");
+        verify(bookingService).confirmBookingsAfterPayment(List.of(10L));
+    }
+
+    @Test
+    @DisplayName("verifyAndCapture: BALANCE clears the remaining amount on an already-CONFIRMED booking")
+    void verifyAndCapture_balance_clearsRemainder() throws Exception {
+        payment.setType(PaymentType.BALANCE);
+        Booking booking = bookingWithStatus(10L, BookingStatus.CONFIRMED, new BigDecimal("200.00"));
+        when(paymentRepository.findByRazorpayOrderId(ORDER_ID)).thenReturn(Optional.of(payment));
+        when(bookingRepository.findAllByPayment_Id(payment.getId())).thenReturn(List.of(booking));
+
+        String signature = realSignature(ORDER_ID, RAZORPAY_PAYMENT_ID);
+        paymentService.verifyAndCapture(CUSTOMER_ID, ORDER_ID, RAZORPAY_PAYMENT_ID, signature);
+
+        assertThat(booking.getAmountPaid()).isEqualByComparingTo("2000.00");
+        // confirmBookingsAfterPayment is still called — it's a no-op for an already-CONFIRMED
+        // booking, so this doesn't re-fire the confirmation notification.
+        verify(bookingService).confirmBookingsAfterPayment(List.of(10L));
     }
 
     @Test

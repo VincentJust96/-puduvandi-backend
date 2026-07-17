@@ -5,6 +5,7 @@ import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.PaymentStatus;
+import com.puduvandi.common.enums.PaymentType;
 import com.puduvandi.config.RazorpayConfig;
 import com.puduvandi.errorlog.service.ErrorLogService;
 import com.puduvandi.exception.BusinessException;
@@ -28,14 +29,21 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Creates Razorpay orders for one or more PAYMENT_PENDING bookings from the
- * same checkout trip, and verifies the signature Razorpay returns after the
- * customer pays. Never talks to Razorpay when mock-enabled=true.
+ * Creates Razorpay orders for a booking's payment (DEPOSIT/FULL at booking
+ * time, or BALANCE to clear a remaining deposit), and verifies the signature
+ * Razorpay returns after the customer pays. Never talks to Razorpay when
+ * mock-enabled=true.
+ * <p>
+ * DEPOSIT is 10% of a booking's totalAmount — the rest is due before pickup
+ * (see HandoverOtpService, which blocks pickup OTP generation until
+ * booking.amountPaid reaches totalAmount). FULL clears it all upfront.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PaymentService {
+
+    private static final BigDecimal DEPOSIT_FRACTION = new BigDecimal("0.10");
 
     private final PaymentRepository paymentRepository;
     private final BookingRepository bookingRepository;
@@ -45,12 +53,15 @@ public class PaymentService {
 
     /**
      * Creates (or re-creates, for a retry) a Payment covering all given bookings and asks
-     * Razorpay for an order. All bookings must belong to the caller and be PAYMENT_PENDING —
-     * this is also how a customer resumes payment on a booking they abandoned earlier,
-     * since re-calling this just supersedes the stale payment_id link with a fresh attempt.
+     * Razorpay for an order.
+     * <p>
+     * DEPOSIT/FULL: all bookings must belong to the caller and be PAYMENT_PENDING (the initial
+     * payment moment right after booking creation).
+     * BALANCE: all bookings must be CONFIRMED with a remaining balance (amountPaid &lt; totalAmount)
+     * — this is how a customer clears the rest of a DEPOSIT-plan booking before pickup.
      */
     @Transactional
-    public PaymentOrderResponse createOrder(Long customerId, List<Long> bookingIds) {
+    public PaymentOrderResponse createOrder(Long customerId, List<Long> bookingIds, PaymentType type) {
         if (razorpayConfig.isMockEnabled()) {
             throw new BusinessException(
                     "Payments are running in mock mode — bookings are already confirmed on creation.");
@@ -60,23 +71,40 @@ public class PaymentService {
         if (bookings.size() != bookingIds.size()) {
             throw new ResourceNotFoundException("One or more bookings were not found for this customer.");
         }
-        for (Booking booking : bookings) {
-            if (booking.getStatus() != BookingStatus.PAYMENT_PENDING) {
-                throw new BusinessException(
-                        "Booking " + booking.getBookingReference() + " is not awaiting payment (status: "
-                                + booking.getStatus() + ").");
-            }
-        }
 
-        BigDecimal totalAmount = bookings.stream()
-                .map(Booking::getTotalAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalAmount = switch (type) {
+            case DEPOSIT -> {
+                requireStatus(bookings, BookingStatus.PAYMENT_PENDING);
+                yield bookings.stream()
+                        .map(b -> b.getTotalAmount().multiply(DEPOSIT_FRACTION).setScale(2, RoundingMode.HALF_UP))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+            }
+            case FULL -> {
+                requireStatus(bookings, BookingStatus.PAYMENT_PENDING);
+                yield bookings.stream()
+                        .map(b -> b.getTotalAmount().subtract(b.getAmountPaid()))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+            }
+            case BALANCE -> {
+                requireStatus(bookings, BookingStatus.CONFIRMED);
+                for (Booking booking : bookings) {
+                    if (booking.getAmountPaid().compareTo(booking.getTotalAmount()) >= 0) {
+                        throw new BusinessException(
+                                "Booking " + booking.getBookingReference() + " is already fully paid.");
+                    }
+                }
+                yield bookings.stream()
+                        .map(b -> b.getTotalAmount().subtract(b.getAmountPaid()))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+            }
+        };
 
         Payment payment = paymentRepository.save(Payment.builder()
                 .customerId(customerId)
                 .amount(totalAmount)
                 .currency("INR")
                 .status(PaymentStatus.CREATED)
+                .type(type)
                 .mock(false)
                 .build());
 
@@ -102,8 +130,8 @@ public class PaymentService {
             payment.setStatus(PaymentStatus.ORDER_CREATED);
             paymentRepository.save(payment);
 
-            log.info("Razorpay order created: paymentId={}, razorpayOrderId={}, amount={}",
-                    payment.getId(), razorpayOrderId, totalAmount);
+            log.info("Razorpay order created: paymentId={}, razorpayOrderId={}, type={}, amount={}",
+                    payment.getId(), razorpayOrderId, type, totalAmount);
 
             return new PaymentOrderResponse(payment.getId(), razorpayOrderId, razorpayConfig.getKeyId(),
                     totalAmount, amountInPaise, payment.getCurrency());
@@ -116,10 +144,21 @@ public class PaymentService {
         }
     }
 
+    private void requireStatus(List<Booking> bookings, BookingStatus required) {
+        for (Booking booking : bookings) {
+            if (booking.getStatus() != required) {
+                throw new BusinessException(
+                        "Booking " + booking.getBookingReference() + " is not eligible for this payment (status: "
+                                + booking.getStatus() + ", expected " + required + ").");
+            }
+        }
+    }
+
     /**
-     * Verifies the signature Razorpay returned after checkout, then confirms every booking
-     * tied to that payment. Idempotent — a duplicate verify call for an already-PAID payment
-     * just returns the current booking IDs without reprocessing anything.
+     * Verifies the signature Razorpay returned after checkout, applies the paid amount to
+     * every booking tied to that payment, and confirms any still-PAYMENT_PENDING ones.
+     * Idempotent — a duplicate verify call for an already-PAID payment just returns the
+     * current booking IDs without reprocessing anything.
      */
     @Transactional
     public List<Long> verifyAndCapture(Long customerId, String razorpayOrderId,
@@ -167,10 +206,24 @@ public class PaymentService {
         payment.setStatus(PaymentStatus.PAID);
         paymentRepository.save(payment);
 
+        // DEPOSIT settles each booking's own 10% (not a proportional split of the aggregate
+        // payment) — recomputed from each booking's own totalAmount so multi-bike trips are
+        // exact even if amounts don't divide evenly. FULL/BALANCE both fully settle the booking.
+        for (Booking booking : bookings) {
+            BigDecimal newAmountPaid = switch (payment.getType()) {
+                case DEPOSIT -> booking.getTotalAmount().multiply(DEPOSIT_FRACTION).setScale(2, RoundingMode.HALF_UP);
+                case FULL, BALANCE -> booking.getTotalAmount();
+            };
+            booking.setAmountPaid(newAmountPaid);
+        }
+        bookingRepository.saveAll(bookings);
+
+        // No-ops for bookings already CONFIRMED (the BALANCE case) — only flips bookings still
+        // PAYMENT_PENDING (the DEPOSIT/FULL case), which is exactly what's needed here.
         bookingService.confirmBookingsAfterPayment(bookingIds);
 
-        log.info("Payment verified and captured: paymentId={}, razorpayOrderId={}, bookings={}",
-                payment.getId(), razorpayOrderId, bookingIds);
+        log.info("Payment verified and captured: paymentId={}, razorpayOrderId={}, type={}, bookings={}",
+                payment.getId(), razorpayOrderId, payment.getType(), bookingIds);
         return bookingIds;
     }
 
@@ -179,6 +232,10 @@ public class PaymentService {
      * releasing the bike. Anchored on the booking's own age (not the payment's) — this also
      * covers a customer who created a booking and never even started a Razorpay order at all,
      * not just one whose order/verification stalled. Called by PaymentExpiryTask.
+     * <p>
+     * Only ever touches PAYMENT_PENDING bookings, so a DEPOSIT-plan booking that's already
+     * CONFIRMED (with a balance still due) is never affected by this sweep — the balance
+     * simply stays due until paid or the customer's ride proceeds regardless.
      */
     @Transactional
     public void expireStalePendingBookings() {

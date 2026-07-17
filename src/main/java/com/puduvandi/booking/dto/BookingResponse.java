@@ -23,6 +23,8 @@ public record BookingResponse(
     BigDecimal baseAmount,
     BigDecimal securityDeposit,
     BigDecimal totalAmount,
+    /** Cumulative amount paid so far — 0 until the first payment, partial under the DEPOSIT plan. */
+    BigDecimal amountPaid,
     BigDecimal commissionPercent,
     BigDecimal commissionAmount,
     BigDecimal ownerEarning,

@@ -20,6 +20,7 @@ import com.puduvandi.delivery.entity.DeliverySettings;
 import com.puduvandi.delivery.repository.DeliverySettingsRepository;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ConflictException;
+import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.owner.dto.CompleteOwnerProfileRequest;
 import com.puduvandi.owner.dto.OwnerProfileResponse;
@@ -36,10 +37,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Set;
 
 @Slf4j
 @Service
@@ -54,6 +57,39 @@ public class AdminService {
     private final CommissionSettingsRepository commissionSettingsRepository;
     private final DeliverySettingsRepository deliverySettingsRepository;
     private final UserDocumentRepository userDocumentRepository;
+    private final JdbcTemplate jdbcTemplate;
+
+    /** PUDUVANDI_ENV values allowed to run the destructive local data reset. */
+    private static final Set<String> RESET_ALLOWED_ENVS = Set.of("", "local");
+    private static final String RESET_CONFIRMATION_PHRASE = "RESET_ALL_DATA";
+
+    /**
+     * Tables wiped by {@link #resetLocalData}, in an order that satisfies FK
+     * constraints without relying solely on CASCADE. commission_settings and
+     * delivery_settings are intentionally excluded — they're platform config,
+     * not per-user test data. "users" is excluded here and handled separately
+     * so the seeded ADMIN account survives the reset.
+     */
+    private static final String RESET_TRUNCATE_SQL = """
+            TRUNCATE TABLE
+                handover_otps,
+                delivery_orders,
+                notification_logs,
+                bike_images,
+                owner_documents,
+                partner_documents,
+                user_documents,
+                refresh_tokens,
+                otp_records,
+                payments,
+                bookings,
+                bikes,
+                owner_profiles,
+                partner_profiles,
+                stored_files,
+                error_logs
+            RESTART IDENTITY CASCADE
+            """;
 
     // ===== DASHBOARD =====
 
@@ -615,6 +651,7 @@ public class AdminService {
                 booking.getBaseAmount(),
                 booking.getSecurityDeposit(),
                 booking.getTotalAmount(),
+                booking.getAmountPaid(),
                 booking.getCommissionPercent(),
                 booking.getCommissionAmount(),
                 booking.getOwnerEarning(),
@@ -671,5 +708,38 @@ public class AdminService {
                 adminName,
                 settings.getUpdatedAt()
         );
+    }
+
+    // ===== LOCAL DATA RESET (DANGER — dev/test only) =====
+
+    /**
+     * Wipes every owner, customer, partner, bike, booking and related row,
+     * leaving only ADMIN users behind. Refuses to run unless PUDUVANDI_ENV is
+     * unset or "local" — never staging/production — and requires the caller
+     * to echo back {@value #RESET_CONFIRMATION_PHRASE} to guard against an
+     * accidental click/replay.
+     */
+    @Transactional
+    public AdminDataResetResponse resetLocalData(String confirmationPhrase) {
+        String env = System.getenv("PUDUVANDI_ENV");
+        String normalizedEnv = env == null ? "" : env.trim().toLowerCase();
+
+        if (!RESET_ALLOWED_ENVS.contains(normalizedEnv)) {
+            throw new ForbiddenException(
+                    "Local data reset is disabled outside local environments (PUDUVANDI_ENV=" + env + ").");
+        }
+        if (!RESET_CONFIRMATION_PHRASE.equals(confirmationPhrase)) {
+            throw new BusinessException(
+                    "Confirmation phrase mismatch. Pass confirmationPhrase=\"" + RESET_CONFIRMATION_PHRASE + "\" to proceed.");
+        }
+
+        log.warn("ADMIN DATA RESET triggered — wiping all non-admin data (PUDUVANDI_ENV={})", env);
+
+        jdbcTemplate.execute(RESET_TRUNCATE_SQL);
+        int usersRemoved = jdbcTemplate.update("DELETE FROM users WHERE role IS DISTINCT FROM 'ADMIN'");
+
+        log.warn("ADMIN DATA RESET complete — {} non-admin user(s) removed", usersRemoved);
+
+        return new AdminDataResetResponse(usersRemoved, env == null ? "local (unset)" : env);
     }
 }

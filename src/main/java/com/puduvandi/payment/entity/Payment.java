@@ -2,6 +2,7 @@ package com.puduvandi.payment.entity;
 
 import com.puduvandi.common.entity.BaseEntity;
 import com.puduvandi.common.enums.PaymentStatus;
+import com.puduvandi.common.enums.PaymentType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -12,6 +13,9 @@ import java.math.BigDecimal;
  * same checkout trip (see Booking.payment). A booking's payment_id points
  * at its most recent attempt — retrying after a failed/expired attempt
  * creates a new Payment row rather than reusing the old one.
+ * <p>
+ * type determines how much this attempt is for and what it does to the
+ * booking(s) on success — see PaymentService.
  */
 @Entity
 @Table(name = "payments")
@@ -40,6 +44,10 @@ public class Payment extends BaseEntity {
     @Column(name = "status", nullable = false, length = 20)
     @Builder.Default
     private PaymentStatus status = PaymentStatus.CREATED;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_type", nullable = false, length = 20)
+    private PaymentType type;
 
     @Column(name = "razorpay_order_id", length = 100)
     private String razorpayOrderId;

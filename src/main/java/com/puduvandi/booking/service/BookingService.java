@@ -215,6 +215,10 @@ public class BookingService {
                 .ownerEarning(ownerEarning)
                 .helmetIncluded(helmetOverride != null ? helmetOverride : bike.isHelmetIncluded())
                 .status(paymentMockEnabled ? BookingStatus.CONFIRMED : BookingStatus.PAYMENT_PENDING)
+                // Mock mode skips Razorpay entirely, so treat it as instantly fully paid —
+                // otherwise every mock-confirmed booking would show a fake balance due and
+                // block pickup OTP generation (see HandoverOtpService.validatePaymentComplete).
+                .amountPaid(paymentMockEnabled ? totalAmount : BigDecimal.ZERO)
                 .deleted(false)
                 .deliveryType(resolvedDeliveryType)
                 .dropoffLatitude(dropoffLat)
@@ -549,6 +553,7 @@ public class BookingService {
                 b.getBaseAmount(),
                 b.getSecurityDeposit(),
                 b.getTotalAmount(),
+                b.getAmountPaid(),
                 b.getCommissionPercent(),
                 b.getCommissionAmount(),
                 b.getOwnerEarning(),

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.util.Optional;
@@ -47,6 +48,7 @@ class AdminServiceDeliveryRateTest {
     @Mock private CommissionSettingsRepository commissionSettingsRepository;
     @Mock private DeliverySettingsRepository deliverySettingsRepository;
     @Mock private UserDocumentRepository userDocumentRepository;
+    @Mock private JdbcTemplate jdbcTemplate;
 
     private AdminService adminService;
 
@@ -57,7 +59,7 @@ class AdminServiceDeliveryRateTest {
     void setUp() {
         adminService = new AdminService(userRepository, ownerProfileRepository, partnerProfileRepository,
                 bikeRepository, bookingRepository, commissionSettingsRepository,
-                deliverySettingsRepository, userDocumentRepository);
+                deliverySettingsRepository, userDocumentRepository, jdbcTemplate);
         admin = User.builder().id(ADMIN_ID).fullName("Admin One").build();
     }
 
