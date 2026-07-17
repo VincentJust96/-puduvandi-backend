@@ -18,7 +18,7 @@ import java.time.format.DateTimeFormatter;
  * (no owner approval step — see BookingService), so "confirmation" here means
  * "notify the customer their already-CONFIRMED booking is ready", not a status change.
  * <p>
- * Every public method swallows its own exceptions so a Twilio/DB hiccup here
+ * Every public method swallows its own exceptions so a notification/DB hiccup here
  * can never fail the booking flow that triggered it.
  */
 @Slf4j

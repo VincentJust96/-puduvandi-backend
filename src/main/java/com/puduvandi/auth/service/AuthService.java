@@ -46,7 +46,7 @@ public class AuthService {
     /**
      * Generates and sends an OTP to the given phone number.
      * mock-enabled=true: code is always mockOtp and only logged (no SMS sent).
-     * mock-enabled=false: a real random code is generated and sent via Twilio SMS.
+     * mock-enabled=false: a real random code is generated and sent via SMS.
      * Creates a new user with null role if not already registered.
      * The user selects CUSTOMER or OWNER after OTP verification.
      */

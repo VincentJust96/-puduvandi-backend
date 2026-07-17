@@ -44,9 +44,9 @@ public class NotificationLog extends BaseEntity {
     @Builder.Default
     private NotificationStatus status = NotificationStatus.PENDING;
 
-    /** Twilio message SID once accepted for delivery */
-    @Column(name = "twilio_sid", length = 100)
-    private String twilioSid;
+    /** Provider message ID once accepted for delivery (provider-agnostic; was twilio_sid) */
+    @Column(name = "provider_message_id", length = 100)
+    private String providerMessageId;
 
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;

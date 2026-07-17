@@ -249,7 +249,6 @@ Use the returned `accessToken` as a Bearer token for all authenticated endpoints
 | `PUDUVANDI_ENV` | unset | Set to `production` to enable the hard JWT-secret check above |
 | `OTP_MOCK_ENABLED` | `true` | When true, OTP is always `OTP_MOCK_VALUE` — dev/staging only |
 | `OTP_MOCK_VALUE` | `123456` | The mock OTP value |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` / `TWILIO_WHATSAPP_NUMBER` | blank | Twilio creds — SMS/WhatsApp notifications no-op (with a warning log) if blank |
 
 See `.env.example` for the full list with comments.
 
@@ -318,7 +317,7 @@ See `.env.example` for the full list with comments.
 | Bikes/Bookings | Listings, instant booking, full ride lifecycle | Done |
 | Owner/Admin | KYC, dashboards, commission + delivery-rate settings, error-log viewer | Done |
 | Delivery/Partner | Partner KYC, job claiming, live location tracking | Done |
-| Notifications | SMS/WhatsApp via Twilio on booking events | Done (needs a real, rotated Twilio account before go-live) |
+| Notifications | SMS/WhatsApp on booking events | Logging/audit trail done; no provider wired in (Twilio removed — replacement TBD) |
 | Docker | `Dockerfile` + `docker-compose.yml` (app + Postgres) | Done |
 | Payment | Razorpay/Stripe integration, payment records table | **TODO — next milestone** |
 | Earnings | Owner earnings ledger, payout summary endpoints | TODO |
