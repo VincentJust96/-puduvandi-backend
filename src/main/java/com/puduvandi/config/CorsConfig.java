@@ -27,7 +27,7 @@ public class CorsConfig {
                 "http://192.168.*.*:*",
                 "capacitor://localhost",
                 "http://localhost",
-                "https://smith-stats-stuart-recommendations.trycloudflare.com/"
+                "https://*.vercel.app"
         ));
 
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
