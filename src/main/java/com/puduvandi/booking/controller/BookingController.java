@@ -7,6 +7,7 @@ import com.puduvandi.booking.dto.CreateBookingRequest;
 import com.puduvandi.booking.dto.PriceEstimateResponse;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.dto.ApiResponse;
+import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.security.PuduvandiUserPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -50,14 +51,16 @@ public class BookingController {
 
     @PostMapping
     @PreAuthorize("hasRole('CUSTOMER')")
-    @Operation(summary = "Create instant booking (auto-confirmed)")
+    @Operation(summary = "Create a booking (PAYMENT_PENDING, or instantly CONFIRMED in mock mode)")
     public ResponseEntity<ApiResponse<BookingResponse>> createBooking(
             @AuthenticationPrincipal PuduvandiUserPrincipal principal,
             @Valid @RequestBody CreateBookingRequest request) {
 
         BookingResponse booking = bookingService.createBooking(principal.getUserId(), request);
+        String message = booking.status() == BookingStatus.CONFIRMED
+                ? "Booking confirmed!" : "Booking created — payment required to confirm.";
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.success("Booking confirmed!", booking));
+                .body(ApiResponse.success(message, booking));
     }
 
     @PostMapping("/batch")
@@ -68,8 +71,10 @@ public class BookingController {
             @Valid @RequestBody BatchBookingRequest request) {
 
         List<BookingResponse> bookings = bookingService.createBookingBatch(principal.getUserId(), request);
+        boolean allConfirmed = bookings.stream().allMatch(b -> b.status() == BookingStatus.CONFIRMED);
+        String message = allConfirmed ? "Booking confirmed!" : "Booking created — payment required to confirm.";
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.success("Booking confirmed!", bookings));
+                .body(ApiResponse.success(message, bookings));
     }
 
     @GetMapping("/my")
@@ -99,16 +104,9 @@ public class BookingController {
         return ResponseEntity.ok(ApiResponse.success("Booking fetched", booking));
     }
 
-    @PostMapping("/{id}/pay")
-    @PreAuthorize("hasRole('CUSTOMER')")
-    @Operation(summary = "Pay for a booking (Phase 3: mocked — booking is already confirmed on create)")
-    public ResponseEntity<ApiResponse<BookingResponse>> payBooking(
-            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
-            @PathVariable Long id) {
-
-        BookingResponse booking = bookingService.getBookingById(id);
-        return ResponseEntity.ok(ApiResponse.success("Payment recorded", booking));
-    }
+    // NOTE: paying for a booking is no longer a bare endpoint — see PaymentController
+    // (POST /api/v1/payments/order to start a Razorpay order for one or more PAYMENT_PENDING
+    // bookings from the same checkout trip, then POST /api/v1/payments/verify to confirm them).
 
     // NOTE: "start ride" (CONFIRMED → RIDE_STARTED) is no longer a bare endpoint — it now
     // requires OTP handover verification. See HandoverOtpController

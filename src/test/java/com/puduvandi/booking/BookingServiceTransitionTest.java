@@ -143,4 +143,60 @@ class BookingServiceTransitionTest {
 
         verify(bikeRepository, never()).save(any());
     }
+
+    // ===== confirmBookingsAfterPayment =====
+
+    @Test
+    @DisplayName("confirmBookingsAfterPayment: PAYMENT_PENDING booking is confirmed and notified")
+    void confirmBookingsAfterPayment_pendingBooking_confirmsAndNotifies() {
+        booking.setStatus(BookingStatus.PAYMENT_PENDING);
+        when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
+
+        bookingService.confirmBookingsAfterPayment(java.util.List.of(BOOKING_ID));
+
+        assertThat(booking.getStatus()).isEqualTo(BookingStatus.CONFIRMED);
+        verify(bookingRepository).save(booking);
+        verify(bookingConfirmationService).sendBookingConfirmation(booking);
+    }
+
+    @Test
+    @DisplayName("confirmBookingsAfterPayment: already-CONFIRMED booking is skipped (idempotent re-verify)")
+    void confirmBookingsAfterPayment_alreadyConfirmed_isSkipped() {
+        booking.setStatus(BookingStatus.CONFIRMED);
+        when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
+
+        bookingService.confirmBookingsAfterPayment(java.util.List.of(BOOKING_ID));
+
+        verify(bookingRepository, never()).save(any());
+        verify(bookingConfirmationService, never()).sendBookingConfirmation(any(Booking.class));
+    }
+
+    // ===== expireUnpaidBooking =====
+
+    @Test
+    @DisplayName("expireUnpaidBooking: PAYMENT_PENDING booking is cancelled and bike released")
+    void expireUnpaidBooking_pendingBooking_cancelsAndReleasesBike() {
+        booking.setStatus(BookingStatus.PAYMENT_PENDING);
+        bike.setStatus(BikeStatus.RESERVED);
+        when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
+
+        bookingService.expireUnpaidBooking(BOOKING_ID);
+
+        assertThat(booking.getStatus()).isEqualTo(BookingStatus.CANCELLED);
+        assertThat(booking.getCancellationReason()).contains("Payment not completed in time");
+        assertThat(bike.getStatus()).isEqualTo(BikeStatus.AVAILABLE);
+        verify(bikeRepository).save(bike);
+    }
+
+    @Test
+    @DisplayName("expireUnpaidBooking: already-resolved booking (e.g. paid) is a no-op")
+    void expireUnpaidBooking_alreadyResolved_isNoOp() {
+        booking.setStatus(BookingStatus.CONFIRMED);
+        when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
+
+        bookingService.expireUnpaidBooking(BOOKING_ID);
+
+        verify(bookingRepository, never()).save(any());
+        verify(bikeRepository, never()).save(any());
+    }
 }

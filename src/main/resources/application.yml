@@ -56,6 +56,17 @@ puduvandi:
 
   support-phone: "+91-8946095151"
 
+  razorpay:
+    # Key ID is safe to expose (it's public); Key Secret must never have a real default here —
+    # both belong only in your local .env (gitignored) or the deployment environment's secrets.
+    key-id: ${RAZORPAY_KEY_ID:}
+    key-secret: ${RAZORPAY_KEY_SECRET:}
+    # true = booking creation auto-confirms instantly, no real gateway call (local/dev default).
+    # false = booking sits PAYMENT_PENDING until a real Razorpay payment is verified.
+    mock-enabled: ${PAYMENT_MOCK_ENABLED:true}
+    # Unpaid PAYMENT_PENDING bookings past this age are auto-cancelled and the bike released.
+    payment-expiry-minutes: ${PAYMENT_EXPIRY_MINUTES:15}
+
 # ===== Logging =====
 logging:
   level:

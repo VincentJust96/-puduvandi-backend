@@ -43,12 +43,16 @@ import java.util.List;
 
 /**
  * Handles the full booking lifecycle:
- * CREATED → CONFIRMED → RESERVED → RIDE_STARTED → RETURN_REQUESTED → COMPLETED
+ * PAYMENT_PENDING → CONFIRMED → RIDE_STARTED → RETURN_REQUESTED → COMPLETED
+ * (or straight to CONFIRMED when puduvandi.razorpay.mock-enabled=true — local/dev default)
  *
  * Key rules:
- * - No owner approval needed. Booking is instantly CONFIRMED after payment (mocked).
- * - Overlap check prevents double-booking.
- * - Customer can only cancel before RESERVED (before ride starts).
+ * - No owner approval needed.
+ * - Overlap check prevents double-booking — a PAYMENT_PENDING booking blocks the slot
+ *   exactly like a CONFIRMED one, so the bike can't be double-booked while payment is in flight.
+ * - Unpaid PAYMENT_PENDING bookings are auto-cancelled after puduvandi.razorpay.payment-expiry-minutes
+ *   (see PaymentExpiryTask) so an abandoned checkout doesn't hold a bike forever.
+ * - Customer can only cancel before RIDE_STARTED.
  */
 @Slf4j
 @Service
@@ -64,6 +68,9 @@ public class BookingService {
 
     @Value("${puduvandi.commission.default-percentage:20.0}")
     private BigDecimal defaultCommissionPercent;
+
+    @Value("${puduvandi.razorpay.mock-enabled:true}")
+    private boolean paymentMockEnabled;
 
     // ===== PRICE ESTIMATE =====
 
@@ -83,11 +90,10 @@ public class BookingService {
     // ===== CREATE BOOKING =====
 
     /**
-     * Customer creates an instant booking.
-     * Flow: validate → check overlap → calculate price → save → mark bike RESERVED → CONFIRMED
-     *
-     * In Phase 3 payment is MOCKED (auto-confirmed).
-     * Phase 4 will integrate Razorpay.
+     * Customer creates a booking.
+     * Flow: validate → check overlap → calculate price → save (PAYMENT_PENDING) → mark bike RESERVED.
+     * Confirmation happens separately once payment is verified (see PaymentService),
+     * unless puduvandi.razorpay.mock-enabled=true, in which case it's instant.
      */
     @Transactional
     public BookingResponse createBooking(Long customerId, CreateBookingRequest request) {
@@ -208,7 +214,7 @@ public class BookingService {
                 .commissionAmount(commissionAmt)
                 .ownerEarning(ownerEarning)
                 .helmetIncluded(helmetOverride != null ? helmetOverride : bike.isHelmetIncluded())
-                .status(BookingStatus.CONFIRMED)   // Auto-confirmed (payment mocked)
+                .status(paymentMockEnabled ? BookingStatus.CONFIRMED : BookingStatus.PAYMENT_PENDING)
                 .deleted(false)
                 .deliveryType(resolvedDeliveryType)
                 .dropoffLatitude(dropoffLat)
@@ -225,12 +231,69 @@ public class BookingService {
             deliveryService.createDeliveryOrder(booking, bike, dropoffLat, dropoffLng);
         }
 
-        log.info("Booking created: ref={}, customer={}, bike={}, amount={}",
-                booking.getBookingReference(), customerId, bike.getId(), totalAmount);
+        log.info("Booking created: ref={}, customer={}, bike={}, amount={}, status={}",
+                booking.getBookingReference(), customerId, bike.getId(), totalAmount, booking.getStatus());
 
-        bookingConfirmationService.sendBookingConfirmation(booking);
+        // Only fire the confirmation notification when the booking is actually confirmed
+        // here (mock mode). A real PAYMENT_PENDING booking gets its confirmation later,
+        // from confirmBookingsAfterPayment(), once payment is verified.
+        if (booking.getStatus() == BookingStatus.CONFIRMED) {
+            bookingConfirmationService.sendBookingConfirmation(booking);
+        }
 
         return toResponse(booking);
+    }
+
+    /**
+     * Flips PAYMENT_PENDING → CONFIRMED for each booking once its payment has been verified.
+     * Called by PaymentService after a successful signature check. Idempotent: bookings not
+     * currently PAYMENT_PENDING (already confirmed by an earlier call, or otherwise resolved)
+     * are silently skipped rather than re-processed.
+     */
+    @Transactional
+    public void confirmBookingsAfterPayment(List<Long> bookingIds) {
+        for (Long bookingId : bookingIds) {
+            Booking booking = bookingRepository.findByIdAndDeletedFalse(bookingId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
+            if (booking.getStatus() != BookingStatus.PAYMENT_PENDING) {
+                continue;
+            }
+            booking.setStatus(BookingStatus.CONFIRMED);
+            bookingRepository.save(booking);
+            log.info("Booking confirmed after payment: bookingId={}", bookingId);
+            bookingConfirmationService.sendBookingConfirmation(booking);
+        }
+    }
+
+    /**
+     * Cancels a booking that's been sitting PAYMENT_PENDING past the payment expiry window,
+     * releasing the bike for other customers. Called by PaymentExpiryTask — a system action,
+     * so unlike cancelBooking() there's no customer-ownership check.
+     * No-op if the booking has already moved on (paid, or cancelled some other way).
+     */
+    @Transactional
+    public void expireUnpaidBooking(Long bookingId) {
+        Booking booking = bookingRepository.findByIdAndDeletedFalse(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
+        if (booking.getStatus() != BookingStatus.PAYMENT_PENDING) {
+            return;
+        }
+
+        booking.setStatus(BookingStatus.CANCELLED);
+        booking.setCancellationReason("Payment not completed in time");
+        bookingRepository.save(booking);
+
+        Bike bike = booking.getBike();
+        if (bike.getStatus() == BikeStatus.RESERVED) {
+            bike.setStatus(BikeStatus.AVAILABLE);
+            bikeRepository.save(bike);
+        }
+
+        if (booking.getDeliveryType() == DeliveryType.PARTNER_DELIVERY) {
+            deliveryService.cancelDeliveryForBooking(bookingId);
+        }
+
+        log.info("Booking expired (payment window elapsed): bookingId={}", bookingId);
     }
 
     // ===== STATUS TRANSITIONS =====

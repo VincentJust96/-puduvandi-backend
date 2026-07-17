@@ -6,6 +6,7 @@ import com.puduvandi.common.entity.BaseEntity;
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.owner.entity.OwnerProfile;
+import com.puduvandi.payment.entity.Payment;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -118,4 +119,9 @@ public class Booking extends BaseEntity {
 
     @Column(name = "dropoff_longitude", precision = 11, scale = 8)
     private BigDecimal dropoffLongitude;
+
+    /** Most recent payment attempt for this booking; null for mock-confirmed bookings. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "payment_id")
+    private Payment payment;
 }

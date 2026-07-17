@@ -23,6 +23,7 @@
         <lombok.version>1.18.32</lombok.version>
         <jjwt.version>0.12.5</jjwt.version>
         <bucket4j.version>8.10.1</bucket4j.version>
+        <razorpay.version>1.4.8</razorpay.version>
     </properties>
 
     <dependencies>
@@ -108,6 +109,13 @@
             <groupId>com.bucket4j</groupId>
             <artifactId>bucket4j-core</artifactId>
             <version>${bucket4j.version}</version>
+        </dependency>
+
+        <!-- ===== Razorpay SDK for payments ===== -->
+        <dependency>
+            <groupId>com.razorpay</groupId>
+            <artifactId>razorpay-java</artifactId>
+            <version>${razorpay.version}</version>
         </dependency>
 
         <!-- ===== Testing ===== -->

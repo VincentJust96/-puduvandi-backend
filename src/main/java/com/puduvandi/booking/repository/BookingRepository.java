@@ -89,4 +89,13 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     /** Next number for booking reference generation — survives restarts, unique across instances */
     @Query(value = "SELECT nextval('booking_reference_seq')", nativeQuery = true)
     long nextBookingReferenceNumber();
+
+    /** Bookings a customer is about to pay for — ownership-checked lookup for payment creation. */
+    List<Booking> findAllByIdInAndCustomer_IdAndDeletedFalse(List<Long> ids, Long customerId);
+
+    /** All bookings tied to a given payment attempt (a checkout trip may cover several bikes). */
+    List<Booking> findAllByPayment_Id(Long paymentId);
+
+    /** Bookings still awaiting payment past the given cutoff — for the expiry sweep. */
+    List<Booking> findAllByStatusAndCreatedAtBefore(BookingStatus status, LocalDateTime cutoff);
 }
