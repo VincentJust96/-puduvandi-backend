@@ -15,6 +15,8 @@ public interface OwnerProfileRepository extends JpaRepository<OwnerProfile, Long
 
     Optional<OwnerProfile> findByUserIdAndDeletedFalse(Long userId);
 
+    Optional<OwnerProfile> findByUserId(Long userId);
+
     boolean existsByUserId(Long userId);
 
     @Query("""

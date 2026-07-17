@@ -69,6 +69,23 @@ public class DeliveryOrder {
     @Column(name = "delivered_at")
     private LocalDateTime deliveredAt;
 
+    /** Customer handed the bike back to the partner (return leg). */
+    @Column(name = "return_collected_at")
+    private LocalDateTime returnCollectedAt;
+
+    /** Partner handed the returned bike back to the owner — return complete. */
+    @Column(name = "return_completed_at")
+    private LocalDateTime returnCompletedAt;
+
+    @Column(name = "partner_current_latitude", precision = 10, scale = 8)
+    private BigDecimal partnerCurrentLatitude;
+
+    @Column(name = "partner_current_longitude", precision = 11, scale = 8)
+    private BigDecimal partnerCurrentLongitude;
+
+    @Column(name = "partner_location_updated_at")
+    private LocalDateTime partnerLocationUpdatedAt;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

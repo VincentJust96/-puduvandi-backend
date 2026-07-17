@@ -1,0 +1,10 @@
+target/
+uploads/*
+!uploads/.gitkeep
+.idea/
+*.iml
+.git/
+.claude/
+*.log
+.env
+*.env.local

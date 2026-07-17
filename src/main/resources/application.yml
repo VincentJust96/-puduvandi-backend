@@ -45,8 +45,8 @@ puduvandi:
   otp:
     expiry-minutes: 5
     length: 6
-    mock-enabled: true        # true = always use "123456" (dev mode)
-    mock-otp: "123456"
+    mock-enabled: ${OTP_MOCK_ENABLED:true}   # true = always use mock-otp (dev mode only — set explicitly)
+    mock-otp: ${OTP_MOCK_VALUE:123456}
 
   commission:
     default-percentage: 20.0

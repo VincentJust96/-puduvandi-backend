@@ -25,6 +25,10 @@ import com.puduvandi.owner.dto.CompleteOwnerProfileRequest;
 import com.puduvandi.owner.dto.OwnerProfileResponse;
 import com.puduvandi.owner.entity.OwnerProfile;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
+import com.puduvandi.partner.dto.CompletePartnerProfileRequest;
+import com.puduvandi.partner.dto.PartnerProfileResponse;
+import com.puduvandi.partner.entity.PartnerProfile;
+import com.puduvandi.partner.repository.PartnerProfileRepository;
 import com.puduvandi.user.entity.UserDocument;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +48,7 @@ public class AdminService {
 
     private final UserRepository userRepository;
     private final OwnerProfileRepository ownerProfileRepository;
+    private final PartnerProfileRepository partnerProfileRepository;
     private final BikeRepository bikeRepository;
     private final BookingRepository bookingRepository;
     private final CommissionSettingsRepository commissionSettingsRepository;
@@ -68,11 +73,15 @@ public class AdminService {
                 + bookingRepository.countByStatusAndDeletedFalse(BookingStatus.RIDE_STARTED);
         long completedBookings = bookingRepository.countByStatusAndDeletedFalse(BookingStatus.COMPLETED);
         double commission = getActiveCommission().commissionPercent().doubleValue();
+        long totalPartners = userRepository.countByRoleAndDeletedFalse(UserRole.PARTNER);
+        long pendingPartnerKyc = partnerProfileRepository
+                .findAllForAdmin(KycStatus.PENDING, PageRequest.of(0, 1)).getTotalElements();
 
         return new AdminDashboardStats(
                 totalCustomers, totalOwners, totalBikes,
                 pendingKyc, pendingBikes, pendingLicences,
-                activeBookings, completedBookings, commission
+                activeBookings, completedBookings, commission,
+                totalPartners, pendingPartnerKyc
         );
     }
 
@@ -203,6 +212,70 @@ public class AdminService {
         assertNoActiveOwnerBookings(owner.getUser().getId());
         softDeleteOwnerAndBikes(owner);
         log.info("Admin soft-deleted ownerId={} (cascaded to bikes)", ownerId);
+    }
+
+    // ===== DELIVERY PARTNER KYC =====
+
+    @Transactional(readOnly = true)
+    public Page<AdminPartnerResponse> listPartners(KycStatus kycStatus, int page, int size) {
+        PageRequest pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
+        return partnerProfileRepository.findAllForAdmin(kycStatus, pageable).map(this::toPartnerResponse);
+    }
+
+    @Transactional
+    public AdminPartnerResponse approvePartnerKyc(Long partnerId) {
+        PartnerProfile partner = findPartnerProfile(partnerId);
+        User user = partner.getUser();
+        if (user.getKycStatus() != KycStatus.PENDING) {
+            throw new BusinessException("KYC is not in PENDING state, current state: " + user.getKycStatus());
+        }
+        user.setKycStatus(KycStatus.APPROVED);
+        user.setStatus(UserStatus.ACTIVE);
+        userRepository.save(user);
+        log.info("Admin approved KYC for partnerId={}", partnerId);
+        return toPartnerResponse(partner);
+    }
+
+    @Transactional
+    public AdminPartnerResponse rejectPartnerKyc(Long partnerId, String reason) {
+        PartnerProfile partner = findPartnerProfile(partnerId);
+        User user = partner.getUser();
+        if (user.getKycStatus() != KycStatus.PENDING) {
+            throw new BusinessException("KYC is not in PENDING state, current state: " + user.getKycStatus());
+        }
+        user.setKycStatus(KycStatus.REJECTED);
+        userRepository.save(user);
+        log.info("Admin rejected KYC for partnerId={}, reason={}", partnerId, reason);
+        return toPartnerResponse(partner);
+    }
+
+    @Transactional(readOnly = true)
+    public PartnerProfileResponse getPartnerDetail(Long partnerId) {
+        PartnerProfile partner = findPartnerProfile(partnerId);
+        return toFullPartnerResponse(partner);
+    }
+
+    @Transactional
+    public AdminPartnerResponse updatePartner(Long partnerId, CompletePartnerProfileRequest request) {
+        PartnerProfile partner = findPartnerProfile(partnerId);
+        partner.setVehicleType(request.vehicleType());
+        partner.setVehicleNumber(request.vehicleNumber());
+        partner.setCity(request.city());
+        partner.setBankAccountNumber(request.bankAccountNumber());
+        partner.setBankIfscCode(request.bankIfscCode());
+        partner.setBankName(request.bankName());
+        partner.setAccountHolderName(request.accountHolderName());
+        PartnerProfile saved = partnerProfileRepository.save(partner);
+        log.info("Admin updated partnerId={}", partnerId);
+        return toPartnerResponse(saved);
+    }
+
+    @Transactional
+    public void deletePartner(Long partnerId) {
+        PartnerProfile partner = findPartnerProfile(partnerId);
+        partner.setDeleted(true);
+        partnerProfileRepository.save(partner);
+        log.info("Admin soft-deleted partnerId={}", partnerId);
     }
 
     // ===== BIKES =====
@@ -383,6 +456,38 @@ public class AdminService {
                 .orElseThrow(() -> new ResourceNotFoundException("OwnerProfile", ownerId));
     }
 
+    private PartnerProfile findPartnerProfile(Long partnerId) {
+        return partnerProfileRepository.findById(partnerId)
+                .filter(p -> !p.isDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("PartnerProfile", partnerId));
+    }
+
+    private AdminPartnerResponse toPartnerResponse(PartnerProfile partner) {
+        User user = partner.getUser();
+        return new AdminPartnerResponse(
+                partner.getId(),
+                user.getId(),
+                user.getPhoneNumber(),
+                user.getFullName(),
+                user.getKycStatus(),
+                partner.getVehicleType(),
+                partner.getVehicleNumber(),
+                partner.getCity(),
+                partner.getTotalDeliveries(),
+                partner.getCreatedAt()
+        );
+    }
+
+    private PartnerProfileResponse toFullPartnerResponse(PartnerProfile partner) {
+        User user = partner.getUser();
+        return new PartnerProfileResponse(
+                partner.getId(), user.getId(), user.getPhoneNumber(), user.getFullName(),
+                user.getKycStatus(), partner.getVehicleType(), partner.getVehicleNumber(),
+                partner.getCity(), partner.getBankAccountNumber(), partner.getBankIfscCode(),
+                partner.getBankName(), partner.getAccountHolderName(),
+                partner.getTotalDeliveries(), partner.getCreatedAt());
+    }
+
     private Bike findBike(Long bikeId) {
         return bikeRepository.findById(bikeId)
                 .filter(b -> !b.isDeleted())
@@ -549,7 +654,7 @@ public class AdminService {
         User admin = findUser(adminUserId);
         DeliverySettings settings = deliverySettingsRepository
                 .findTopByActiveTrueOrderByIdDesc()
-                .orElseThrow(() -> new ResourceNotFoundException("DeliverySettings", 1L));
+                .orElseGet(() -> DeliverySettings.builder().active(true).build());
         settings.setRatePerKm(request.ratePerKm());
         settings.setUpdatedByAdmin(admin);
         DeliverySettings saved = deliverySettingsRepository.save(settings);

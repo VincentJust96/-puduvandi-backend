@@ -6,6 +6,7 @@ import com.puduvandi.config.TwilioConfig;
 import com.puduvandi.errorlog.service.ErrorLogService;
 import com.puduvandi.notification.entity.NotificationLog;
 import com.puduvandi.notification.repository.NotificationLogRepository;
+import com.twilio.exception.ApiException;
 import com.twilio.rest.api.v2010.account.Message;
 import com.twilio.type.PhoneNumber;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Sends booking-related SMS/WhatsApp messages via Twilio and logs every
@@ -28,6 +30,16 @@ import java.util.List;
 public class NotificationService {
 
     private static final int MAX_RETRIES = 3;
+
+    /** Twilio error codes that will never succeed on retry — no point burning quota on them. */
+    private static final Set<Integer> NON_RETRYABLE_TWILIO_CODES = Set.of(
+            21211, // Invalid 'To' phone number
+            21608, // 'To' number not verified (trial account restriction)
+            21610, // Recipient has unsubscribed
+            21614, // 'To' number is not a valid mobile number
+            20003, // Authentication error (bad Account SID/Auth Token)
+            63007  // No WhatsApp Channel found for the 'From' address
+    );
 
     private final NotificationLogRepository notificationLogRepository;
     private final TwilioConfig twilioConfig;
@@ -135,14 +147,43 @@ public class NotificationService {
                     notificationLog.getNotificationType(), notificationLog.getBookingId(),
                     toPhone, message.getSid());
         } catch (Exception ex) {
+            boolean permanent = isPermanentFailure(ex);
+
             notificationLog.setStatus(NotificationStatus.FAILED);
             notificationLog.setErrorMessage(ex.getMessage());
+            if (permanent) {
+                // Will never succeed on retry (bad number, unverified trial destination,
+                // missing WhatsApp channel, etc.) — stop the retry sweep from picking it up again.
+                notificationLog.setRetryCount(MAX_RETRIES);
+            }
             notificationLogRepository.save(notificationLog);
 
-            log.error("Failed to send {}: bookingId={}, phone={}, error={}",
-                    notificationLog.getNotificationType(), notificationLog.getBookingId(),
-                    toPhone, ex.getMessage());
+            log.error("Failed to send {} ({}): bookingId={}, phone={}, error={}",
+                    notificationLog.getNotificationType(), permanent ? "permanent, won't retry" : "will retry",
+                    notificationLog.getBookingId(), toPhone, ex.getMessage());
             errorLogService.logServiceError(ex, "NotificationLog", notificationLog.getId(), null);
         }
+    }
+
+    /**
+     * True for Twilio errors that no amount of retrying will fix — an unverified
+     * trial destination, a bad number, missing WhatsApp channel, or bad credentials.
+     * Also catches the trial account's daily send cap by message text, since retrying
+     * that same day only wastes quota that would otherwise reset tomorrow.
+     */
+    private boolean isPermanentFailure(Exception ex) {
+        if (ex instanceof ApiException apiEx && apiEx.getCode() != null
+                && NON_RETRYABLE_TWILIO_CODES.contains(apiEx.getCode())) {
+            return true;
+        }
+        String message = ex.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase();
+        return lower.contains("unverified")
+                || lower.contains("daily messages limit")
+                || lower.contains("could not find a channel")
+                || lower.contains("not a valid phone number");
     }
 }

@@ -11,6 +11,8 @@ import com.puduvandi.delivery.dto.DeliveryRateResponse;
 import com.puduvandi.delivery.dto.UpdateDeliveryRateRequest;
 import com.puduvandi.owner.dto.CompleteOwnerProfileRequest;
 import com.puduvandi.owner.dto.OwnerProfileResponse;
+import com.puduvandi.partner.dto.CompletePartnerProfileRequest;
+import com.puduvandi.partner.dto.PartnerProfileResponse;
 import com.puduvandi.security.PuduvandiUserPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -128,6 +130,53 @@ public class AdminController {
     public ResponseEntity<ApiResponse<Void>> deleteOwner(@PathVariable Long ownerId) {
         adminService.deleteOwner(ownerId);
         return ResponseEntity.ok(ApiResponse.success("Owner deleted", null));
+    }
+
+    // ===== DELIVERY PARTNER KYC =====
+
+    @GetMapping("/partners")
+    @Operation(summary = "List all delivery partners (paginated, filter by KYC status)")
+    public ResponseEntity<ApiResponse<Page<AdminPartnerResponse>>> listPartners(
+            @RequestParam(required = false) KycStatus kycStatus,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        return ResponseEntity.ok(ApiResponse.success("Partners fetched", adminService.listPartners(kycStatus, page, size)));
+    }
+
+    @PatchMapping("/partners/{partnerId}/approve-kyc")
+    @Operation(summary = "Approve delivery partner KYC")
+    public ResponseEntity<ApiResponse<AdminPartnerResponse>> approvePartnerKyc(@PathVariable Long partnerId) {
+        return ResponseEntity.ok(ApiResponse.success("KYC approved", adminService.approvePartnerKyc(partnerId)));
+    }
+
+    @PatchMapping("/partners/{partnerId}/reject-kyc")
+    @Operation(summary = "Reject delivery partner KYC with a reason")
+    public ResponseEntity<ApiResponse<AdminPartnerResponse>> rejectPartnerKyc(
+            @PathVariable Long partnerId,
+            @Valid @RequestBody RejectReasonRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("KYC rejected", adminService.rejectPartnerKyc(partnerId, request.reason())));
+    }
+
+    @GetMapping("/partners/{partnerId}")
+    @Operation(summary = "Get full delivery partner profile detail (for admin edit)")
+    public ResponseEntity<ApiResponse<PartnerProfileResponse>> getPartnerDetail(@PathVariable Long partnerId) {
+        return ResponseEntity.ok(ApiResponse.success("Partner detail fetched", adminService.getPartnerDetail(partnerId)));
+    }
+
+    @PutMapping("/partners/{partnerId}")
+    @Operation(summary = "Edit delivery partner vehicle/bank details")
+    public ResponseEntity<ApiResponse<AdminPartnerResponse>> updatePartner(
+            @PathVariable Long partnerId,
+            @Valid @RequestBody CompletePartnerProfileRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Partner updated", adminService.updatePartner(partnerId, request)));
+    }
+
+    @DeleteMapping("/partners/{partnerId}")
+    @Operation(summary = "Soft-delete a delivery partner profile")
+    public ResponseEntity<ApiResponse<Void>> deletePartner(@PathVariable Long partnerId) {
+        adminService.deletePartner(partnerId);
+        return ResponseEntity.ok(ApiResponse.success("Partner deleted", null));
     }
 
     // ===== BIKES =====

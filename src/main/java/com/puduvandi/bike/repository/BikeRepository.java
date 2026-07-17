@@ -5,10 +5,13 @@ import com.puduvandi.common.enums.BikeStatus;
 import com.puduvandi.common.enums.BikeVerificationStatus;
 import com.puduvandi.common.enums.FuelType;
 import com.puduvandi.common.enums.TransmissionType;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
@@ -65,4 +68,15 @@ public interface BikeRepository extends JpaRepository<Bike, Long> {
     List<Bike> findAllByOwnerIdAndDeletedFalse(Long ownerId);
 
     long countByDeletedFalse();
+
+    /**
+     * Acquires a row-level pessimistic write lock on the bike, serializing
+     * concurrent booking attempts for the same bike so the overlap check in
+     * BookingService.createSingleBooking() can't race (TOCTOU double-booking).
+     * Must be called inside an existing @Transactional boundary and the lock
+     * held through the booking save().
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT b FROM Bike b WHERE b.id = :id")
+    Optional<Bike> lockById(@Param("id") Long id);
 }

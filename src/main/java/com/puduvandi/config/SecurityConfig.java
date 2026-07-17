@@ -1,6 +1,7 @@
 package com.puduvandi.config;
 
 import com.puduvandi.security.JwtAuthenticationFilter;
+import com.puduvandi.security.RateLimitFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -27,6 +28,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final RateLimitFilter rateLimitFilter;
     private final org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource;
 
     @Bean
@@ -51,11 +53,13 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/v1/files/**").permitAll()
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/v1/owner/**").hasRole("OWNER")
+                .requestMatchers("/api/v1/partner/**").hasRole("PARTNER")
                 .anyRequest().authenticated()
             )
 
             .addFilterBefore(jwtAuthenticationFilter,
-                    UsernamePasswordAuthenticationFilter.class);
+                    UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(rateLimitFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }

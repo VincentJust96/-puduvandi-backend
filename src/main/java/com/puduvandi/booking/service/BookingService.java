@@ -155,7 +155,13 @@ public class BookingService {
                     + "Please upload it on your profile page and wait for admin approval.");
         }
 
-        Bike bike = findApprovedAvailableBike(bikeId);
+        // Acquire a row-level lock on the bike FIRST (before the overlap check) so two
+        // concurrent booking attempts for the same bike are serialized — prevents the
+        // classic TOCTOU race where both requests pass the overlap check before either saves.
+        // Held for the rest of this @Transactional method, through the booking save() below.
+        Bike bike = bikeRepository.lockById(bikeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Bike", bikeId));
+        validateBikeAvailableForBooking(bike);
 
         if (resolvedDeliveryType == DeliveryType.PARTNER_DELIVERY) {
             if (bike.getLatitude() == null || bike.getLongitude() == null) {
@@ -230,17 +236,21 @@ public class BookingService {
     // ===== STATUS TRANSITIONS =====
 
     /**
-     * Customer or system marks ride as started.
+     * Raw CONFIRMED → RIDE_STARTED transition, with no caller-identity check of its own.
+     * Only reachable via the OTP-gated handover flow (HandoverOtpService), which has
+     * already verified the requester's role+identity against the booking before calling
+     * this — see PICKUP_SELF and RECEIVE_PARTNER in HandoverPurpose.
      */
     @Transactional
-    public BookingResponse startRide(Long customerId, Long bookingId) {
-        Booking booking = findCustomerBooking(customerId, bookingId);
+    public BookingResponse transitionToRideStarted(Long bookingId) {
+        Booking booking = bookingRepository.findByIdAndDeletedFalse(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
         assertStatus(booking, BookingStatus.CONFIRMED, "Ride can only be started on CONFIRMED bookings.");
 
         booking.setStatus(BookingStatus.RIDE_STARTED);
         bookingRepository.save(booking);
 
-        log.info("Ride started: bookingId={}", bookingId);
+        log.info("Ride started (OTP-verified): bookingId={}", bookingId);
         return toResponse(booking);
     }
 
@@ -260,8 +270,10 @@ public class BookingService {
     }
 
     /**
-     * System/Admin completes the booking after physical return.
-     * Releases bike back to AVAILABLE.
+     * Raw RETURN_REQUESTED → COMPLETED transition. Releases the bike back to AVAILABLE.
+     * Used by the admin force-complete endpoint AND, with no caller-identity check of its
+     * own, by the OTP-gated handover flow (HandoverOtpService — RETURN_SELF/RETURN_FINAL),
+     * which has already verified the requester's role+identity before calling this.
      */
     @Transactional
     public BookingResponse completeBooking(Long bookingId) {
@@ -346,33 +358,6 @@ public class BookingService {
                 .orElseThrow(() -> new ResourceNotFoundException("Booking", id));
     }
 
-    /**
-     * Owner marks a RETURN_REQUESTED booking as COMPLETED and releases the bike.
-     */
-    @Transactional
-    public BookingResponse completeBookingAsOwner(Long userId, Long bookingId) {
-        Booking booking = bookingRepository.findByIdAndDeletedFalse(bookingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
-
-        if (!booking.getOwner().getUser().getId().equals(userId)) {
-            throw new ForbiddenException("You do not have permission to complete this booking.");
-        }
-        assertStatus(booking, BookingStatus.RETURN_REQUESTED,
-                "Booking must be in RETURN_REQUESTED status to complete.");
-
-        booking.setStatus(BookingStatus.COMPLETED);
-        booking.setActualReturnDatetime(LocalDateTime.now());
-        bookingRepository.save(booking);
-
-        Bike bike = booking.getBike();
-        bike.setStatus(BikeStatus.AVAILABLE);
-        bikeRepository.save(bike);
-
-        log.info("Booking completed by owner: bookingId={}, ownerUserId={}", bookingId, userId);
-        bookingConfirmationService.sendRideCompletionNotification(booking);
-        return toResponse(booking);
-    }
-
     // ===== PRIVATE HELPERS =====
 
     private Bike findApprovedAvailableBike(Long bikeId) {
@@ -380,10 +365,18 @@ public class BookingService {
                 bikeId, BikeVerificationStatus.APPROVED)
                 .orElseThrow(() -> new ResourceNotFoundException("Bike", bikeId));
 
+        validateBikeAvailableForBooking(bike);
+        return bike;
+    }
+
+    /** Same checks as findApprovedAvailableBike(), for an already-fetched (e.g. locked) Bike. */
+    private void validateBikeAvailableForBooking(Bike bike) {
+        if (bike.isDeleted() || bike.getVerificationStatus() != BikeVerificationStatus.APPROVED) {
+            throw new ResourceNotFoundException("Bike", bike.getId());
+        }
         if (bike.getStatus() != BikeStatus.AVAILABLE) {
             throw new BusinessException("This bike is currently not available for booking.");
         }
-        return bike;
     }
 
     private void validateDateRange(LocalDateTime pickup, LocalDateTime returnDt) {

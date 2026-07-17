@@ -110,16 +110,10 @@ public class BookingController {
         return ResponseEntity.ok(ApiResponse.success("Payment recorded", booking));
     }
 
-    @PostMapping("/{id}/start")
-    @PreAuthorize("hasRole('CUSTOMER')")
-    @Operation(summary = "Start ride (CONFIRMED → RIDE_STARTED)")
-    public ResponseEntity<ApiResponse<BookingResponse>> startRide(
-            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
-            @PathVariable Long id) {
-
-        BookingResponse booking = bookingService.startRide(principal.getUserId(), id);
-        return ResponseEntity.ok(ApiResponse.success("Ride started", booking));
-    }
+    // NOTE: "start ride" (CONFIRMED → RIDE_STARTED) is no longer a bare endpoint — it now
+    // requires OTP handover verification. See HandoverOtpController
+    // (POST /api/v1/bookings/{id}/handover/pickup_self/generate + /verify, or
+    // /handover/receive_partner/generate + /verify for partner-delivery bookings).
 
     @PostMapping("/{id}/return-request")
     @PreAuthorize("hasRole('CUSTOMER')")
@@ -154,16 +148,10 @@ public class BookingController {
         return ResponseEntity.ok(ApiResponse.success("Booking confirmed", booking));
     }
 
-    @PostMapping("/{id}/complete")
-    @PreAuthorize("hasRole('OWNER')")
-    @Operation(summary = "Owner approves return (RETURN_REQUESTED → COMPLETED)")
-    public ResponseEntity<ApiResponse<BookingResponse>> completeBookingAsOwner(
-            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
-            @PathVariable Long id) {
-
-        BookingResponse booking = bookingService.completeBookingAsOwner(principal.getUserId(), id);
-        return ResponseEntity.ok(ApiResponse.success("Booking completed", booking));
-    }
+    // NOTE: owner-side "complete return" (RETURN_REQUESTED → COMPLETED) is no longer a bare
+    // endpoint — it now requires OTP handover verification. See HandoverOtpController
+    // (POST /api/v1/bookings/{id}/handover/return_self/generate + /verify, or
+    // /handover/return_final/generate + /verify for partner-delivery bookings).
 
     // ===== ADMIN ENDPOINTS =====
 

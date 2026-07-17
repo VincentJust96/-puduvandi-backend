@@ -180,13 +180,29 @@ Swagger UI: `http://localhost:8080/swagger-ui.html`
 - Maven 3.9+
 - PostgreSQL 16 running on `localhost:5432`
 
-### 1. Create the database
+### Option A — Docker Compose (recommended for staging/testing)
+
+```bash
+cp .env.example .env
+# Edit .env: set DB_PASSWORD, and generate a JWT_SECRET with:
+#   openssl rand -base64 48
+
+docker compose up --build
+```
+
+This builds the app image, starts Postgres in a container, and runs Flyway
+migrations (including seed data) automatically on a fresh volume. The app
+starts on port `8080`; Postgres is also exposed on `5432` for inspection.
+
+### Option B — Run directly with Maven (local dev)
+
+#### 1. Create the database
 
 ```sql
 CREATE DATABASE puduvandi;
 ```
 
-### 2. Configure credentials
+#### 2. Configure credentials
 
 Edit `src/main/resources/application.yml` if your PostgreSQL username/password differ from the defaults:
 
@@ -197,7 +213,7 @@ spring:
     password: postgres
 ```
 
-### 3. Run
+#### 3. Run
 
 ```bash
 mvn spring-boot:run
@@ -205,7 +221,7 @@ mvn spring-boot:run
 
 Flyway will auto-apply all migrations on startup. The app starts on port `8080`.
 
-### 4. Test the OTP flow (dev mode)
+### Test the OTP flow (dev mode)
 
 ```bash
 # Step 1 — request OTP (mock mode always sends 123456)
@@ -227,7 +243,15 @@ Use the returned `accessToken` as a Bearer token for all authenticated endpoints
 
 | Variable | Default | Description |
 |---|---|---|
-| `JWT_SECRET` | base64 dev key | JWT signing secret — **must change in production** |
+| `DB_URL` | `jdbc:postgresql://localhost:5432/puduvandi` | Postgres connection string |
+| `DB_USERNAME` / `DB_PASSWORD` | `postgres` / `postgres` | Postgres credentials |
+| `JWT_SECRET` | base64 dev placeholder | JWT signing secret — **must change per environment**. `SecurityStartupValidator` refuses to boot with the placeholder when `PUDUVANDI_ENV=production`. Generate with `openssl rand -base64 48`. |
+| `PUDUVANDI_ENV` | unset | Set to `production` to enable the hard JWT-secret check above |
+| `OTP_MOCK_ENABLED` | `true` | When true, OTP is always `OTP_MOCK_VALUE` — dev/staging only |
+| `OTP_MOCK_VALUE` | `123456` | The mock OTP value |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` / `TWILIO_WHATSAPP_NUMBER` | blank | Twilio creds — SMS/WhatsApp notifications no-op (with a warning log) if blank |
+
+See `.env.example` for the full list with comments.
 
 ---
 
@@ -290,18 +314,26 @@ Use the returned `accessToken` as a Bearer token for all authenticated endpoints
 
 | Module | Feature | Status |
 |---|---|---|
-| Payment | Razorpay/Stripe integration, payment records table | TODO |
+| Auth/Security | OTP+JWT, refresh rotation, rate limiting, handover OTP for pickup/delivery/return | Done |
+| Bikes/Bookings | Listings, instant booking, full ride lifecycle | Done |
+| Owner/Admin | KYC, dashboards, commission + delivery-rate settings, error-log viewer | Done |
+| Delivery/Partner | Partner KYC, job claiming, live location tracking | Done |
+| Notifications | SMS/WhatsApp via Twilio on booking events | Done (needs a real, rotated Twilio account before go-live) |
+| Docker | `Dockerfile` + `docker-compose.yml` (app + Postgres) | Done |
+| Payment | Razorpay/Stripe integration, payment records table | **TODO — next milestone** |
 | Earnings | Owner earnings ledger, payout summary endpoints | TODO |
-| Notifications | SMS/push notification on booking events | TODO |
-| Docker | `Dockerfile` + `docker-compose.yml` (app + Postgres) | TODO |
+| CI/CD | Automated test + build + deploy pipeline | TODO |
 
 ### Frontend (`E:/puduvandi-frontend` — React + Vite)
 
-| Phase | Feature | Status |
-|---|---|---|
-| Phase 1 | LoginPage, AuthContext, ProtectedRoute, Navbar | Done |
-| Phase 2 | CustomerProfilePage, OwnerProfilePage | Done |
-| Phase 3 | BikeListPage, BikeCard, BikeDetailsPage | TODO |
-| Phase 3 | BookingConfirmationPage, MyBookingsPage | TODO |
-| Phase 4 | OwnerDashboardPage, MyBikesPage, AddBikePage | TODO |
-| Phase 4 | OwnerBookingsPage, AdminPanel | TODO |
+All phases below are done: Login/Auth, Customer + Owner + Partner profiles,
+bike browse/detail, checkout (with a test-mode payment step pending real
+Razorpay integration), bookings with OTP handover UI, owner dashboard +
+bike management, partner dashboard, and a full admin console (users, owners,
+partners, fleet, licences, settings, commission/delivery-rate, activity log).
+
+Remaining frontend gaps mirror the backend: no real payment UI beyond the
+test-mode step, no owner payout/earnings view beyond the dashboard total, and
+the Capacitor Android/iOS scaffolds are unconfigured placeholders (`appId`
+still `com.example.app`) — treat native app packaging as a separate project
+if it's needed for launch.

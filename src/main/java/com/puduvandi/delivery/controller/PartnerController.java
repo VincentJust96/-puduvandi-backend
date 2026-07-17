@@ -1,5 +1,6 @@
 package com.puduvandi.delivery.controller;
 
+import com.puduvandi.booking.dto.LocationRequest;
 import com.puduvandi.common.dto.ApiResponse;
 import com.puduvandi.delivery.dto.PartnerDeliveryResponse;
 import com.puduvandi.delivery.service.DeliveryService;
@@ -7,6 +8,7 @@ import com.puduvandi.security.PuduvandiUserPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -48,21 +50,19 @@ public class PartnerController {
         return ResponseEntity.ok(ApiResponse.success("Delivery claimed", deliveryService.claim(principal.getUserId(), id)));
     }
 
-    @PostMapping("/{id}/picked-up")
-    @Operation(summary = "Mark the bike as picked up from the owner")
-    public ResponseEntity<ApiResponse<PartnerDeliveryResponse>> markPickedUp(
+    @PostMapping("/{id}/location")
+    @Operation(summary = "Push my current GPS location while a claimed delivery leg is in progress")
+    public ResponseEntity<ApiResponse<Void>> updateLocation(
             @AuthenticationPrincipal PuduvandiUserPrincipal principal,
-            @PathVariable Long id) {
+            @PathVariable Long id,
+            @Valid @RequestBody LocationRequest request) {
 
-        return ResponseEntity.ok(ApiResponse.success("Marked picked up", deliveryService.markPickedUp(principal.getUserId(), id)));
+        deliveryService.updatePartnerLocation(principal.getUserId(), id, request.latitude(), request.longitude());
+        return ResponseEntity.ok(ApiResponse.success("Location updated"));
     }
 
-    @PostMapping("/{id}/delivered")
-    @Operation(summary = "Mark the bike as delivered to the customer")
-    public ResponseEntity<ApiResponse<PartnerDeliveryResponse>> markDelivered(
-            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
-            @PathVariable Long id) {
-
-        return ResponseEntity.ok(ApiResponse.success("Marked delivered", deliveryService.markDelivered(principal.getUserId(), id)));
-    }
+    // NOTE: "picked up" (CLAIMED → PICKED_UP) and "delivered" (PICKED_UP → DELIVERED) are no
+    // longer bare endpoints — they now require OTP handover verification. See
+    // HandoverOtpController (POST /api/v1/bookings/{id}/handover/pickup_partner/generate +
+    // /verify, and /handover/receive_partner/generate + /verify respectively).
 }

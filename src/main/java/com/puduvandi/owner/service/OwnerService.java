@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -32,7 +33,12 @@ public class OwnerService {
     private final BikeRepository bikeRepository;
     private final BookingRepository bookingRepository;
 
-    @Transactional(readOnly = true)
+    /**
+     * NOT read-only: findOrCreateOwnerProfile() may insert an empty profile on
+     * first call (auto-vivify) — a readOnly transaction would have Spring set
+     * the JDBC connection read-only, and Postgres rejects that INSERT outright.
+     */
+    @Transactional
     public OwnerProfileResponse getProfile(Long userId) {
         User user = findUser(userId);
         OwnerProfile profile = findOrCreateOwnerProfile(user);
@@ -129,15 +135,27 @@ public class OwnerService {
     }
 
     private OwnerProfile findOrCreateOwnerProfile(User user) {
-        return ownerProfileRepository.findByUserIdAndDeletedFalse(user.getId())
-                .orElseGet(() -> {
-                    OwnerProfile profile = OwnerProfile.builder()
-                            .user(user)
-                            .totalBikes(0)
-                            .deleted(false)
-                            .build();
-                    return ownerProfileRepository.save(profile);
-                });
+        Optional<OwnerProfile> existing = ownerProfileRepository.findByUserId(user.getId());
+        if (existing.isPresent()) {
+            OwnerProfile profile = existing.get();
+            if (profile.isDeleted()) {
+                // owner_profiles.user_id is globally unique, so a soft-deleted profile
+                // must be reactivated here rather than inserting a new one (would violate
+                // the unique constraint) — see [[project-softdelete-unique-constraint]].
+                profile.setDeleted(false);
+                profile.setTotalBikes(0);
+                profile = ownerProfileRepository.save(profile);
+                log.info("Soft-deleted owner profile reactivated: userId={}", user.getId());
+            }
+            return profile;
+        }
+
+        OwnerProfile profile = OwnerProfile.builder()
+                .user(user)
+                .totalBikes(0)
+                .deleted(false)
+                .build();
+        return ownerProfileRepository.save(profile);
     }
 
     private OwnerProfileResponse toResponse(User user, OwnerProfile profile) {

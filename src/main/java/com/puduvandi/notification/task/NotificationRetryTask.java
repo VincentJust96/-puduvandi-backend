@@ -16,7 +16,7 @@ public class NotificationRetryTask {
 
     private final NotificationService notificationService;
 
-    @Scheduled(fixedDelay = 900000)
+    @Scheduled(initialDelay = 900000, fixedDelay = 900000)
     public void retryFailedNotifications() {
         log.info("Starting scheduled notification retry sweep");
         try {

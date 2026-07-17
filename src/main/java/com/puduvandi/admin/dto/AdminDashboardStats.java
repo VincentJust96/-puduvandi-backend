@@ -12,5 +12,7 @@ public record AdminDashboardStats(
     long pendingLicenceApprovals,
     long activeBookings,
     long completedBookings,
-    double commissionPercent
+    double commissionPercent,
+    long totalPartners,
+    long pendingPartnerKycCount
 ) {}
