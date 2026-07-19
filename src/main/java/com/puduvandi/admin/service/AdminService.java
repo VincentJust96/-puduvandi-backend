@@ -24,7 +24,9 @@ import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.owner.dto.CompleteOwnerProfileRequest;
 import com.puduvandi.owner.dto.OwnerProfileResponse;
+import com.puduvandi.owner.entity.OwnerDocument;
 import com.puduvandi.owner.entity.OwnerProfile;
+import com.puduvandi.owner.repository.OwnerDocumentRepository;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
 import com.puduvandi.partner.dto.CompletePartnerProfileRequest;
 import com.puduvandi.partner.dto.PartnerProfileResponse;
@@ -57,6 +59,7 @@ public class AdminService {
     private final CommissionSettingsRepository commissionSettingsRepository;
     private final DeliverySettingsRepository deliverySettingsRepository;
     private final UserDocumentRepository userDocumentRepository;
+    private final OwnerDocumentRepository ownerDocumentRepository;
     private final JdbcTemplate jdbcTemplate;
 
     /** PUDUVANDI_ENV values allowed to run the destructive local data reset. */
@@ -200,6 +203,7 @@ public class AdminService {
         user.setKycStatus(KycStatus.APPROVED);
         user.setStatus(UserStatus.ACTIVE);
         userRepository.save(user);
+        cascadeOwnerDocumentStatus(owner, DocumentStatus.APPROVED);
         log.info("Admin approved KYC for ownerId={}", ownerId);
         return toOwnerResponse(owner);
     }
@@ -213,8 +217,25 @@ public class AdminService {
         }
         user.setKycStatus(KycStatus.REJECTED);
         userRepository.save(user);
+        cascadeOwnerDocumentStatus(owner, DocumentStatus.REJECTED);
         log.info("Admin rejected KYC for ownerId={}, reason={}", ownerId, reason);
         return toOwnerResponse(owner);
+    }
+
+    // The admin KYC decision is holistic (one decision per owner, not one per
+    // uploaded document — there's no separate per-document review screen for
+    // owner KYC the way there is for driving licences), so approving/rejecting
+    // the owner must carry that same status onto every document they submitted.
+    // Otherwise a document stays stuck on PENDING forever even after the owner
+    // shows as APPROVED, which is exactly what a user should never see.
+    private void cascadeOwnerDocumentStatus(OwnerProfile owner, DocumentStatus status) {
+        List<OwnerDocument> docs = ownerDocumentRepository.findByOwnerIdAndDeletedFalse(owner.getId());
+        for (OwnerDocument doc : docs) {
+            if (doc.getStatus() == DocumentStatus.PENDING) {
+                doc.setStatus(status);
+            }
+        }
+        ownerDocumentRepository.saveAll(docs);
     }
 
     @Transactional(readOnly = true)
@@ -233,10 +254,6 @@ public class AdminService {
         owner.setCity(request.city());
         owner.setState(request.state());
         owner.setPincode(request.pincode());
-        owner.setBankAccountNumber(request.bankAccountNumber());
-        owner.setBankIfscCode(request.bankIfscCode());
-        owner.setBankName(request.bankName());
-        owner.setAccountHolderName(request.accountHolderName());
         OwnerProfile saved = ownerProfileRepository.save(owner);
         log.info("Admin updated ownerId={}", ownerId);
         return toOwnerResponse(saved);
@@ -563,8 +580,7 @@ public class AdminService {
                 owner.getId(), user.getId(), user.getPhoneNumber(), user.getFullName(),
                 user.getKycStatus(), owner.getBusinessName(), owner.getGstin(),
                 owner.getAddressLine1(), owner.getAddressLine2(), owner.getCity(),
-                owner.getState(), owner.getPincode(), owner.getBankAccountNumber(),
-                owner.getBankIfscCode(), owner.getBankName(), owner.getAccountHolderName(),
+                owner.getState(), owner.getPincode(),
                 owner.getTotalBikes(), owner.getCreatedAt());
     }
 
@@ -661,7 +677,11 @@ public class AdminService {
                 booking.getCreatedAt(),
                 dayMode ? "DAY" : "HOUR",
                 quantity,
-                booking.getDeliveryType()
+                booking.getDeliveryType(),
+                userDocumentRepository
+                        .findByUserIdAndDocumentTypeAndDeletedFalse(booking.getCustomer().getId(), DocumentType.DRIVING_LICENSE)
+                        .map(UserDocument::getDocumentUrl)
+                        .orElse(null)
         );
     }
 

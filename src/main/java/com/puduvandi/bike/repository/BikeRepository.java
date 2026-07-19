@@ -37,20 +37,27 @@ public interface BikeRepository extends JpaRepository<Bike, Long> {
           AND b.status = com.puduvandi.common.enums.BikeStatus.AVAILABLE
           AND (:brand IS NULL OR LOWER(b.brand) LIKE LOWER(CONCAT('%', cast(:brand as string), '%')))
           AND (:model IS NULL OR LOWER(b.model) LIKE LOWER(CONCAT('%', cast(:model as string), '%')))
+          AND (:area IS NULL OR LOWER(b.area) LIKE LOWER(CONCAT('%', cast(:area as string), '%')))
           AND (:fuelType IS NULL OR b.fuelType = :fuelType)
           AND (:transmission IS NULL OR b.transmission = :transmission)
           AND (:minPrice IS NULL OR b.pricePerDay >= :minPrice)
           AND (:maxPrice IS NULL OR b.pricePerDay <= :maxPrice)
           AND (:helmetIncluded IS NULL OR b.helmetIncluded = :helmetIncluded)
+          AND (:search IS NULL
+               OR LOWER(b.brand) LIKE LOWER(CONCAT('%', cast(:search as string), '%'))
+               OR LOWER(b.model) LIKE LOWER(CONCAT('%', cast(:search as string), '%'))
+               OR LOWER(b.area) LIKE LOWER(CONCAT('%', cast(:search as string), '%')))
         """)
     Page<Bike> browseAvailableBikes(
             String brand,
             String model,
+            String area,
             FuelType fuelType,
             TransmissionType transmission,
             BigDecimal minPrice,
             BigDecimal maxPrice,
             Boolean helmetIncluded,
+            String search,
             Pageable pageable
     );
 

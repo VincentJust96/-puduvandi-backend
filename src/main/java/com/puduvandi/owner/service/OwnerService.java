@@ -57,15 +57,6 @@ public class OwnerService {
         profile.setCity(request.city());
         profile.setState(request.state());
         profile.setPincode(request.pincode());
-        profile.setBankAccountNumber(request.bankAccountNumber());
-        profile.setBankIfscCode(request.bankIfscCode());
-        profile.setBankName(request.bankName());
-        profile.setAccountHolderName(request.accountHolderName());
-
-        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED) {
-            user.setKycStatus(KycStatus.PENDING);
-            userRepository.save(user);
-        }
 
         OwnerProfile saved = ownerProfileRepository.save(profile);
         log.info("Owner profile completed for userId={}", userId);
@@ -94,6 +85,14 @@ public class OwnerService {
                 .build();
 
         OwnerDocument saved = ownerDocumentRepository.save(doc);
+
+        // Uploading a KYC document — not merely filling in business/address
+        // details — is what actually puts the owner up for admin review.
+        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED) {
+            user.setKycStatus(KycStatus.PENDING);
+            userRepository.save(user);
+        }
+
         log.info("Owner document uploaded: type={}, userId={}", request.documentType(), userId);
         return toDocumentResponse(saved);
     }
@@ -172,10 +171,6 @@ public class OwnerService {
                 profile.getCity(),
                 profile.getState(),
                 profile.getPincode(),
-                profile.getBankAccountNumber(),
-                profile.getBankIfscCode(),
-                profile.getBankName(),
-                profile.getAccountHolderName(),
                 profile.getTotalBikes(),
                 profile.getCreatedAt()
         );

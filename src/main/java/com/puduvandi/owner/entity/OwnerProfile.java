@@ -48,18 +48,6 @@ public class OwnerProfile extends BaseEntity {
     @Column(name = "pincode", length = 10)
     private String pincode;
 
-    @Column(name = "bank_account_number", length = 50)
-    private String bankAccountNumber;
-
-    @Column(name = "bank_ifsc_code", length = 20)
-    private String bankIfscCode;
-
-    @Column(name = "bank_name", length = 100)
-    private String bankName;
-
-    @Column(name = "account_holder_name", length = 100)
-    private String accountHolderName;
-
     @Column(name = "total_bikes", nullable = false)
     private int totalBikes;
 

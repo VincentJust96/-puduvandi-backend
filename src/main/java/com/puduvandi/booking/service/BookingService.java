@@ -13,7 +13,6 @@ import com.puduvandi.common.enums.BikeStatus;
 import com.puduvandi.common.enums.BikeVerificationStatus;
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.DeliveryType;
-import com.puduvandi.common.enums.DocumentStatus;
 import com.puduvandi.common.enums.DocumentType;
 import com.puduvandi.auth.entity.User;
 import com.puduvandi.auth.repository.UserRepository;
@@ -22,6 +21,7 @@ import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.notification.service.BookingConfirmationService;
+import com.puduvandi.user.entity.UserDocument;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -154,11 +154,12 @@ public class BookingService {
         User customer = userRepository.findById(customerId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", customerId));
 
-        if (!userDocumentRepository.existsByUserIdAndDocumentTypeAndStatusAndDeletedFalse(
-                customerId, DocumentType.DRIVING_LICENSE, DocumentStatus.APPROVED)) {
-            throw new BusinessException(
-                    "Your driving licence must be verified before you can book a bike. "
-                    + "Please upload it on your profile page and wait for admin approval.");
+        // No admin approval step for driving licences — the owner reviews the
+        // attached licence themselves via the booking details. Booking just
+        // requires that one has been uploaded, regardless of review status.
+        if (userDocumentRepository.findByUserIdAndDocumentTypeAndDeletedFalse(
+                customerId, DocumentType.DRIVING_LICENSE).isEmpty()) {
+            throw new BusinessException("Please upload your driving licence before booking.");
         }
 
         // Acquire a row-level lock on the bike FIRST (before the overlap check) so two
@@ -563,7 +564,15 @@ public class BookingService {
                 b.getCreatedAt(),
                 dayMode ? "DAY" : "HOUR",
                 quantity,
-                b.getDeliveryType()
+                b.getDeliveryType(),
+                customerLicenceUrl(b.getCustomer().getId())
         );
+    }
+
+    private String customerLicenceUrl(Long customerId) {
+        return userDocumentRepository
+                .findByUserIdAndDocumentTypeAndDeletedFalse(customerId, DocumentType.DRIVING_LICENSE)
+                .map(UserDocument::getDocumentUrl)
+                .orElse(null);
     }
 }

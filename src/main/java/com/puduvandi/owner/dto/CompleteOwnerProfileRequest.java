@@ -30,18 +30,6 @@ public record CompleteOwnerProfileRequest(
 
     @NotBlank(message = "Pincode is required")
     @Schema(example = "607402")
-    String pincode,
-
-    @NotBlank(message = "Bank account number is required")
-    String bankAccountNumber,
-
-    @NotBlank(message = "IFSC code is required")
-    String bankIfscCode,
-
-    @NotBlank(message = "Bank name is required")
-    String bankName,
-
-    @NotBlank(message = "Account holder name is required")
-    String accountHolderName
+    String pincode
 
 ) {}

@@ -19,10 +19,6 @@ public record OwnerProfileResponse(
     String city,
     String state,
     String pincode,
-    String bankAccountNumber,
-    String bankIfscCode,
-    String bankName,
-    String accountHolderName,
     int totalBikes,
     LocalDateTime createdAt
 ) {}

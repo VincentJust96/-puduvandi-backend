@@ -10,6 +10,7 @@ import com.puduvandi.delivery.dto.UpdateDeliveryRateRequest;
 import com.puduvandi.delivery.entity.DeliverySettings;
 import com.puduvandi.delivery.repository.DeliverySettingsRepository;
 import com.puduvandi.exception.ResourceNotFoundException;
+import com.puduvandi.owner.repository.OwnerDocumentRepository;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
 import com.puduvandi.partner.repository.PartnerProfileRepository;
 import com.puduvandi.user.repository.UserDocumentRepository;
@@ -48,6 +49,7 @@ class AdminServiceDeliveryRateTest {
     @Mock private CommissionSettingsRepository commissionSettingsRepository;
     @Mock private DeliverySettingsRepository deliverySettingsRepository;
     @Mock private UserDocumentRepository userDocumentRepository;
+    @Mock private OwnerDocumentRepository ownerDocumentRepository;
     @Mock private JdbcTemplate jdbcTemplate;
 
     private AdminService adminService;
@@ -59,7 +61,7 @@ class AdminServiceDeliveryRateTest {
     void setUp() {
         adminService = new AdminService(userRepository, ownerProfileRepository, partnerProfileRepository,
                 bikeRepository, bookingRepository, commissionSettingsRepository,
-                deliverySettingsRepository, userDocumentRepository, jdbcTemplate);
+                deliverySettingsRepository, userDocumentRepository, ownerDocumentRepository, jdbcTemplate);
         admin = User.builder().id(ADMIN_ID).fullName("Admin One").build();
     }
 

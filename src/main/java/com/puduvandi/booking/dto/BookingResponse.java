@@ -36,5 +36,11 @@ public record BookingResponse(
     String rentalMode,
     /** Derived: number of days or hours matching rentalMode */
     int quantity,
-    DeliveryType deliveryType
+    DeliveryType deliveryType,
+    /**
+     * The customer's on-file driving licence, for the owner to review directly —
+     * there's no separate admin approval step for it. Null if the customer
+     * hasn't uploaded one (or it was later removed).
+     */
+    String customerLicenceUrl
 ) {}

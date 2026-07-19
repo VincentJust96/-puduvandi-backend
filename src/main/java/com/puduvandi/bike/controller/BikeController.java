@@ -42,20 +42,24 @@ public class BikeController {
      * Browse all available bikes with optional filters.
      */
     @GetMapping
-    @Operation(summary = "Browse available bikes", description = "Filter by brand, model, fuel type, price range etc.")
+    @Operation(summary = "Browse available bikes", description = "Filter by brand, model, area, fuel type, price range etc.")
     public ResponseEntity<ApiResponse<Page<BikeResponse>>> browseAvailableBikes(
             @RequestParam(required = false) String brand,
             @RequestParam(required = false) String model,
+            @RequestParam(required = false) String area,
             @RequestParam(required = false) FuelType fuelType,
             @RequestParam(required = false) TransmissionType transmission,
             @RequestParam(required = false) BigDecimal minPrice,
             @RequestParam(required = false) BigDecimal maxPrice,
             @RequestParam(required = false) Boolean helmetIncluded,
+            // Free-text search across brand/model/area (OR-matched) — separate from
+            // the field-specific params above, which stay exact/single-field filters.
+            @RequestParam(required = false) String search,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size) {
 
         Page<BikeResponse> bikes = bikeService.browseAvailableBikes(
-                brand, model, fuelType, transmission, minPrice, maxPrice, helmetIncluded, page, size);
+                brand, model, area, fuelType, transmission, minPrice, maxPrice, helmetIncluded, search, page, size);
         return ResponseEntity.ok(ApiResponse.success("Bikes fetched successfully", bikes));
     }
 

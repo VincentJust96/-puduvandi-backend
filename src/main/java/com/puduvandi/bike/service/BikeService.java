@@ -190,13 +190,13 @@ public class BikeService {
      */
     @Transactional(readOnly = true)
     public Page<BikeResponse> browseAvailableBikes(
-            String brand, String model,
+            String brand, String model, String area,
             FuelType fuelType, TransmissionType transmission,
             BigDecimal minPrice, BigDecimal maxPrice,
-            Boolean helmetIncluded, int page, int size) {
+            Boolean helmetIncluded, String search, int page, int size) {
 
         return bikeRepository.browseAvailableBikes(
-                brand, model, fuelType, transmission, minPrice, maxPrice, helmetIncluded,
+                brand, model, area, fuelType, transmission, minPrice, maxPrice, helmetIncluded, search,
                 PageRequest.of(page, size, Sort.by("createdAt").descending()))
                 .map(this::toResponse);
     }
