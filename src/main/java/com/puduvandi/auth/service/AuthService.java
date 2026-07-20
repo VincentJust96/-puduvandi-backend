@@ -15,16 +15,17 @@ import com.puduvandi.config.OtpProperties;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.exception.UnauthorizedException;
+import com.puduvandi.exception.ConflictException;
 import com.puduvandi.notification.service.NotificationService;
 import com.puduvandi.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
-import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -40,6 +41,7 @@ public class AuthService {
     private final OtpProperties otpProperties;
     private final NotificationService notificationService;
     private final RefreshTokenSecurityService refreshTokenSecurityService;
+    private final PasswordEncoder passwordEncoder;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -47,37 +49,14 @@ public class AuthService {
      * Generates and sends an OTP to the given phone number.
      * mock-enabled=true: code is always mockOtp and only logged (no SMS sent).
      * mock-enabled=false: a real random code is generated and sent via SMS.
-     * Creates a new user with null role if not already registered.
-     * The user selects CUSTOMER or OWNER after OTP verification.
+     * <p>
+     * Deliberately does NOT touch the users table — merely requesting an OTP
+     * (a typo'd number, an abandoned signup) must never reserve a phone
+     * number. The account only gets created once the OTP is actually proven
+     * correct, in verifyOtp() below.
      */
     @Transactional
     public void sendOtp(SendOtpRequest request) {
-        Optional<User> existingUser = userRepository.findByPhoneNumber(request.phoneNumber());
-
-        if (existingUser.isEmpty()) {
-            User newUser = User.builder()
-                    .phoneNumber(request.phoneNumber())
-                    .role(null)  // set via /auth/set-role after first login
-                    .status(UserStatus.PENDING_VERIFICATION)
-                    .kycStatus(KycStatus.NOT_SUBMITTED)
-                    .deleted(false)
-                    .build();
-            userRepository.save(newUser);
-            log.info("New user registered: phone={}", request.phoneNumber());
-        } else if (existingUser.get().isDeleted()) {
-            // The phone_number column is globally unique, so a soft-deleted account
-            // must be reactivated here rather than inserting a new row (would violate
-            // the unique constraint) — otherwise the number is permanently unusable
-            // since verifyOtp only looks up non-deleted users.
-            User user = existingUser.get();
-            user.setDeleted(false);
-            user.setRole(null);
-            user.setStatus(UserStatus.PENDING_VERIFICATION);
-            user.setKycStatus(KycStatus.NOT_SUBMITTED);
-            userRepository.save(user);
-            log.info("Soft-deleted user reactivated: phone={}", request.phoneNumber());
-        }
-
         String otpCode = generateOtp();
 
         OtpRecord otpRecord = OtpRecord.builder()
@@ -103,16 +82,14 @@ public class AuthService {
     /**
      * Verifies the OTP and issues JWT access + refresh tokens.
      * Returns isNewUser=true when the user has no role yet (first login).
+     * <p>
+     * The user account itself is created (or reactivated, if soft-deleted)
+     * right here — only once the OTP is proven correct, never earlier in
+     * sendOtp(). This is the single point where a phone number is actually
+     * reserved.
      */
     @Transactional
     public AuthTokenResponse verifyOtp(VerifyOtpRequest request) {
-        User user = userRepository.findByPhoneNumberAndDeletedFalse(request.phoneNumber())
-                .orElseThrow(() -> new BusinessException("User not found. Please request an OTP first."));
-
-        if (user.getStatus() == UserStatus.SUSPENDED) {
-            throw new BusinessException("Your account has been suspended. Please contact support.");
-        }
-
         OtpRecord otpRecord = otpRecordRepository
                 .findLatestValidOtp(request.phoneNumber(), LocalDateTime.now())
                 .orElseThrow(() -> new UnauthorizedException("OTP has expired or is invalid."));
@@ -123,9 +100,31 @@ public class AuthService {
 
         otpRecordRepository.markAllUsedByPhone(request.phoneNumber());
 
-        if (user.getStatus() == UserStatus.PENDING_VERIFICATION) {
-            user.setStatus(UserStatus.ACTIVE);
-            userRepository.save(user);
+        User user = userRepository.findByPhoneNumber(request.phoneNumber())
+                .map(existing -> {
+                    if (!existing.isDeleted()) return existing;
+                    // The phone_number column is globally unique, so a soft-deleted
+                    // account must be reactivated rather than inserting a new row.
+                    existing.setDeleted(false);
+                    existing.setRole(null);
+                    existing.setStatus(UserStatus.ACTIVE);
+                    existing.setKycStatus(KycStatus.NOT_SUBMITTED);
+                    return userRepository.save(existing);
+                })
+                .orElseGet(() -> {
+                    User created = userRepository.save(User.builder()
+                            .phoneNumber(request.phoneNumber())
+                            .role(null)  // set via /auth/set-role after first login
+                            .status(UserStatus.ACTIVE)
+                            .kycStatus(KycStatus.NOT_SUBMITTED)
+                            .deleted(false)
+                            .build());
+                    log.info("New user registered: phone={}", request.phoneNumber());
+                    return created;
+                });
+
+        if (user.getStatus() == UserStatus.SUSPENDED) {
+            throw new BusinessException("Your account has been suspended. Please contact support.");
         }
 
         boolean isNewUser = (user.getRole() == null);
@@ -142,7 +141,7 @@ public class AuthService {
         return new AuthTokenResponse(
                 accessToken,
                 refreshToken,
-                new UserSummary(user.getId(), user.getPhoneNumber(), user.getFullName(),
+                new UserSummary(user.getId(), user.getPhoneNumber(), user.getEmail(), user.getFullName(),
                         user.getRole(), user.getStatus(), isNewUser, profileComplete)
         );
     }
@@ -169,7 +168,7 @@ public class AuthService {
         userRepository.save(user);
 
         boolean profileComplete = isProfileComplete(user);
-        String accessToken = jwtUtil.generateAccessToken(user.getId(), user.getPhoneNumber(), role.name());
+        String accessToken = jwtUtil.generateAccessToken(user.getId(), loginIdentifier(user), role.name());
         String refreshToken = createAndSaveRefreshToken(user);
 
         log.info("Role set for userId={}: role={}", userId, role);
@@ -177,7 +176,7 @@ public class AuthService {
         return new AuthTokenResponse(
                 accessToken,
                 refreshToken,
-                new UserSummary(user.getId(), user.getPhoneNumber(), user.getFullName(),
+                new UserSummary(user.getId(), user.getPhoneNumber(), user.getEmail(), user.getFullName(),
                         role, user.getStatus(), false, profileComplete)
         );
     }
@@ -222,13 +221,84 @@ public class AuthService {
         String newRefreshToken = createAndSaveRefreshToken(user);
 
         String roleStr = (user.getRole() != null) ? user.getRole().name() : "NEW_USER";
-        String newAccessToken = jwtUtil.generateAccessToken(user.getId(), user.getPhoneNumber(), roleStr);
+        String newAccessToken = jwtUtil.generateAccessToken(user.getId(), loginIdentifier(user), roleStr);
 
         return new AuthTokenResponse(
                 newAccessToken,
                 newRefreshToken,
-                new UserSummary(user.getId(), user.getPhoneNumber(), user.getFullName(),
+                new UserSummary(user.getId(), user.getPhoneNumber(), user.getEmail(), user.getFullName(),
                         user.getRole(), user.getStatus(), user.getRole() == null, isProfileComplete(user))
+        );
+    }
+
+    /**
+     * Creates a new account with email + password. Mirrors sendOtp+verifyOtp's
+     * "new user" shape: role is left null so the frontend routes straight to
+     * the same role-selection screen (/auth/set-role) used by the phone flow.
+     */
+    @Transactional
+    public AuthTokenResponse emailSignup(EmailSignupRequest request) {
+        String email = request.email().trim().toLowerCase();
+
+        if (userRepository.existsByEmailIgnoreCase(email)) {
+            throw new ConflictException("An account with this email already exists.");
+        }
+
+        User user = User.builder()
+                .email(email)
+                .passwordHash(passwordEncoder.encode(request.password()))
+                .role(null)
+                .status(UserStatus.ACTIVE)
+                .kycStatus(KycStatus.NOT_SUBMITTED)
+                .deleted(false)
+                .build();
+        userRepository.save(user);
+        log.info("New user registered via email: email={}", email);
+
+        String accessToken  = jwtUtil.generateAccessToken(user.getId(), email, "NEW_USER");
+        String refreshToken = createAndSaveRefreshToken(user);
+
+        return new AuthTokenResponse(
+                accessToken,
+                refreshToken,
+                new UserSummary(user.getId(), null, email, user.getFullName(),
+                        null, user.getStatus(), true, false)
+        );
+    }
+
+    /**
+     * Logs in with email + password. Mirrors verifyOtp's response shape so the
+     * frontend's existing login() handling works unchanged for either flow.
+     */
+    @Transactional
+    public AuthTokenResponse emailLogin(EmailLoginRequest request) {
+        String email = request.email().trim().toLowerCase();
+
+        User user = userRepository.findByEmailIgnoreCaseAndDeletedFalse(email)
+                .orElseThrow(() -> new UnauthorizedException("Incorrect email or password."));
+
+        if (user.getPasswordHash() == null || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+            throw new UnauthorizedException("Incorrect email or password.");
+        }
+
+        if (user.getStatus() == UserStatus.SUSPENDED) {
+            throw new BusinessException("Your account has been suspended. Please contact support.");
+        }
+
+        boolean isNewUser = (user.getRole() == null);
+        boolean profileComplete = isProfileComplete(user);
+
+        String roleStr = isNewUser ? "NEW_USER" : user.getRole().name();
+        String accessToken  = jwtUtil.generateAccessToken(user.getId(), email, roleStr);
+        String refreshToken = createAndSaveRefreshToken(user);
+
+        log.info("User logged in via email: id={}, role={}, isNewUser={}", user.getId(), roleStr, isNewUser);
+
+        return new AuthTokenResponse(
+                accessToken,
+                refreshToken,
+                new UserSummary(user.getId(), user.getPhoneNumber(), email, user.getFullName(),
+                        user.getRole(), user.getStatus(), isNewUser, profileComplete)
         );
     }
 
@@ -245,6 +315,14 @@ public class AuthService {
 
     private boolean isProfileComplete(User user) {
         return user.getFullName() != null && !user.getFullName().isBlank();
+    }
+
+    // The JWT subject just needs to be *some* stable identifier — resolution
+    // on every request is by the userId claim (see JwtAuthenticationFilter),
+    // never by looking this back up — so an email-only account can use its
+    // email here in place of a phone number.
+    private String loginIdentifier(User user) {
+        return user.getPhoneNumber() != null ? user.getPhoneNumber() : user.getEmail();
     }
 
     private String generateOtp() {

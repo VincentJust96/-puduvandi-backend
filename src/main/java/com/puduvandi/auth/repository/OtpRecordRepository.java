@@ -31,4 +31,24 @@ public interface OtpRecordRepository extends JpaRepository<OtpRecord, Long> {
     @Modifying
     @Query("UPDATE OtpRecord o SET o.used = true WHERE o.phoneNumber = :phone")
     void markAllUsedByPhone(String phone);
+
+    /**
+     * Same as {@link #findLatestValidOtp} but scoped to a specific purpose
+     * (e.g. "PHONE_ADD"/"PHONE_CHANGE") — a login OTP and a phone-add/change
+     * OTP sent to the same number must never satisfy each other.
+     */
+    @Query("""
+        SELECT o FROM OtpRecord o
+        WHERE o.phoneNumber = :phone
+          AND o.purpose = :purpose
+          AND o.used = false
+          AND o.expiresAt > :now
+        ORDER BY o.createdAt DESC
+        LIMIT 1
+        """)
+    Optional<OtpRecord> findLatestValidOtpForPurpose(String phone, String purpose, LocalDateTime now);
+
+    @Modifying
+    @Query("UPDATE OtpRecord o SET o.used = true WHERE o.phoneNumber = :phone AND o.purpose = :purpose")
+    void markUsedByPhoneAndPurpose(String phone, String purpose);
 }

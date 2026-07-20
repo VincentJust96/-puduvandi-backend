@@ -16,18 +16,6 @@ public record CompletePartnerProfileRequest(
 
     @NotBlank(message = "City is required")
     @Schema(example = "Puduvandi")
-    String city,
-
-    @NotBlank(message = "Bank account number is required")
-    String bankAccountNumber,
-
-    @NotBlank(message = "IFSC code is required")
-    String bankIfscCode,
-
-    @NotBlank(message = "Bank name is required")
-    String bankName,
-
-    @NotBlank(message = "Account holder name is required")
-    String accountHolderName
+    String city
 
 ) {}

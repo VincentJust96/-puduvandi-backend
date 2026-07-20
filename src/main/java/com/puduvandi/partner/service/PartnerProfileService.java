@@ -53,15 +53,6 @@ public class PartnerProfileService {
         profile.setVehicleType(request.vehicleType());
         profile.setVehicleNumber(request.vehicleNumber());
         profile.setCity(request.city());
-        profile.setBankAccountNumber(request.bankAccountNumber());
-        profile.setBankIfscCode(request.bankIfscCode());
-        profile.setBankName(request.bankName());
-        profile.setAccountHolderName(request.accountHolderName());
-
-        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED) {
-            user.setKycStatus(KycStatus.PENDING);
-            userRepository.save(user);
-        }
 
         PartnerProfile saved = partnerProfileRepository.save(profile);
         log.info("Partner profile completed for userId={}", userId);
@@ -90,6 +81,14 @@ public class PartnerProfileService {
                 .build();
 
         PartnerDocument saved = partnerDocumentRepository.save(doc);
+
+        // Uploading a KYC document — not merely filling in vehicle/city
+        // details — is what actually puts the partner up for admin review.
+        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED) {
+            user.setKycStatus(KycStatus.PENDING);
+            userRepository.save(user);
+        }
+
         log.info("Partner document uploaded: type={}, userId={}", request.documentType(), userId);
         return toDocumentResponse(saved);
     }
@@ -141,10 +140,6 @@ public class PartnerProfileService {
                 profile.getVehicleType(),
                 profile.getVehicleNumber(),
                 profile.getCity(),
-                profile.getBankAccountNumber(),
-                profile.getBankIfscCode(),
-                profile.getBankName(),
-                profile.getAccountHolderName(),
                 profile.getTotalDeliveries(),
                 profile.getCreatedAt()
         );

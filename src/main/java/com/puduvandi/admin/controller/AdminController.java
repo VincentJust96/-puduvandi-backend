@@ -14,6 +14,7 @@ import com.puduvandi.owner.dto.OwnerProfileResponse;
 import com.puduvandi.partner.dto.CompletePartnerProfileRequest;
 import com.puduvandi.partner.dto.PartnerProfileResponse;
 import com.puduvandi.security.PuduvandiUserPrincipal;
+import com.puduvandi.user.dto.PhoneChangeRequestResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -260,6 +261,33 @@ public class AdminController {
             @PathVariable Long documentId,
             @Valid @RequestBody RejectReasonRequest request) {
         return ResponseEntity.ok(ApiResponse.success("Document rejected", adminService.rejectDocument(documentId, request.reason())));
+    }
+
+    // ===== PHONE CHANGE REQUESTS =====
+
+    @GetMapping("/phone-change-requests")
+    @Operation(summary = "List phone-change requests (paginated, filter by status)")
+    public ResponseEntity<ApiResponse<Page<PhoneChangeRequestResponse>>> listPhoneChangeRequests(
+            @RequestParam(required = false) DocumentStatus status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        Page<PhoneChangeRequestResponse> requests = adminService.listPhoneChangeRequests(status, page, size);
+        return ResponseEntity.ok(ApiResponse.success("Phone change requests fetched", requests));
+    }
+
+    @PatchMapping("/phone-change-requests/{requestId}/approve")
+    @Operation(summary = "Approve a phone-change request")
+    public ResponseEntity<ApiResponse<PhoneChangeRequestResponse>> approvePhoneChangeRequest(@PathVariable Long requestId) {
+        return ResponseEntity.ok(ApiResponse.success("Phone change approved", adminService.approvePhoneChangeRequest(requestId)));
+    }
+
+    @PatchMapping("/phone-change-requests/{requestId}/reject")
+    @Operation(summary = "Reject a phone-change request with a reason")
+    public ResponseEntity<ApiResponse<PhoneChangeRequestResponse>> rejectPhoneChangeRequest(
+            @PathVariable Long requestId,
+            @Valid @RequestBody RejectReasonRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Phone change rejected", adminService.rejectPhoneChangeRequest(requestId, request.reason())));
     }
 
     // ===== COMMISSION =====

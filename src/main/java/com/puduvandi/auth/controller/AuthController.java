@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/v1/auth")
 @RequiredArgsConstructor
-@Tag(name = "Authentication", description = "Phone OTP-based login and token management")
+@Tag(name = "Authentication", description = "Phone OTP and email/password login, plus token management")
 public class AuthController {
 
     private final AuthService authService;
@@ -32,6 +32,20 @@ public class AuthController {
     @Operation(summary = "Verify OTP and login", description = "Returns tokens + isNewUser flag. If isNewUser=true, call /set-role next.")
     public ResponseEntity<ApiResponse<AuthTokenResponse>> verifyOtp(@Valid @RequestBody VerifyOtpRequest request) {
         AuthTokenResponse tokens = authService.verifyOtp(request);
+        return ResponseEntity.ok(ApiResponse.success("Login successful", tokens));
+    }
+
+    @PostMapping("/email-signup")
+    @Operation(summary = "Sign up with email + password", description = "Creates a new account. Role not required yet — call /set-role next.")
+    public ResponseEntity<ApiResponse<AuthTokenResponse>> emailSignup(@Valid @RequestBody EmailSignupRequest request) {
+        AuthTokenResponse tokens = authService.emailSignup(request);
+        return ResponseEntity.ok(ApiResponse.success("Account created", tokens));
+    }
+
+    @PostMapping("/email-login")
+    @Operation(summary = "Log in with email + password")
+    public ResponseEntity<ApiResponse<AuthTokenResponse>> emailLogin(@Valid @RequestBody EmailLoginRequest request) {
+        AuthTokenResponse tokens = authService.emailLogin(request);
         return ResponseEntity.ok(ApiResponse.success("Login successful", tokens));
     }
 

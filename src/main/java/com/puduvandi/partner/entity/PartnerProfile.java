@@ -8,7 +8,7 @@ import lombok.*;
 /**
  * Extended profile for users with PARTNER (delivery partner) role.
  * KYC approval is gated via the shared User.kycStatus field, same
- * mechanism as OwnerProfile — see PartnerProfileService.completeProfile().
+ * mechanism as OwnerProfile — see PartnerProfileService.uploadDocument().
  */
 @Entity
 @Table(name = "partner_profiles")
@@ -35,18 +35,6 @@ public class PartnerProfile extends BaseEntity {
 
     @Column(name = "city", length = 100)
     private String city;
-
-    @Column(name = "bank_account_number", length = 50)
-    private String bankAccountNumber;
-
-    @Column(name = "bank_ifsc_code", length = 20)
-    private String bankIfscCode;
-
-    @Column(name = "bank_name", length = 100)
-    private String bankName;
-
-    @Column(name = "account_holder_name", length = 100)
-    private String accountHolderName;
 
     @Column(name = "total_deliveries", nullable = false)
     private int totalDeliveries;

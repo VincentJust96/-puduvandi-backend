@@ -11,7 +11,8 @@ import org.hibernate.type.SqlTypes;
 
 /**
  * Core user entity for all platform roles (CUSTOMER, OWNER, ADMIN).
- * Phone number is the primary login identifier.
+ * Login identifier is either phoneNumber (OTP-based) or email (password-based)
+ * — exactly one of the two flows populates the corresponding fields.
  */
 @Entity
 @Table(name = "users")
@@ -26,11 +27,14 @@ public class User extends BaseEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "phone_number", nullable = false, unique = true, length = 15)
+    @Column(name = "phone_number", unique = true, length = 15)
     private String phoneNumber;
 
     @Column(name = "email", length = 100)
     private String email;
+
+    @Column(name = "password_hash", length = 255)
+    private String passwordHash;
 
     @Column(name = "full_name", length = 100)
     private String fullName;

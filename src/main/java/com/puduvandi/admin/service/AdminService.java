@@ -30,9 +30,14 @@ import com.puduvandi.owner.repository.OwnerDocumentRepository;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
 import com.puduvandi.partner.dto.CompletePartnerProfileRequest;
 import com.puduvandi.partner.dto.PartnerProfileResponse;
+import com.puduvandi.partner.entity.PartnerDocument;
 import com.puduvandi.partner.entity.PartnerProfile;
+import com.puduvandi.partner.repository.PartnerDocumentRepository;
 import com.puduvandi.partner.repository.PartnerProfileRepository;
+import com.puduvandi.user.dto.PhoneChangeRequestResponse;
+import com.puduvandi.user.entity.PhoneChangeRequest;
 import com.puduvandi.user.entity.UserDocument;
+import com.puduvandi.user.repository.PhoneChangeRequestRepository;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,6 +65,8 @@ public class AdminService {
     private final DeliverySettingsRepository deliverySettingsRepository;
     private final UserDocumentRepository userDocumentRepository;
     private final OwnerDocumentRepository ownerDocumentRepository;
+    private final PhoneChangeRequestRepository phoneChangeRequestRepository;
+    private final PartnerDocumentRepository partnerDocumentRepository;
     private final JdbcTemplate jdbcTemplate;
 
     /** PUDUVANDI_ENV values allowed to run the destructive local data reset. */
@@ -158,9 +165,16 @@ public class AdminService {
             ownerProfileRepository.findByUserIdAndDeletedFalse(userId)
                     .ifPresent(this::softDeleteOwnerAndBikes);
         }
+        // phone_number/email carry plain UNIQUE constraints (not partial on
+        // is_deleted), so a soft-deleted row keeps permanently squatting on
+        // its identifiers unless cleared here — otherwise no one could ever
+        // sign up with that phone/email again, and it wouldn't even be
+        // visible why (this account no longer shows up anywhere in admin).
         user.setDeleted(true);
+        user.setPhoneNumber(null);
+        user.setEmail(null);
         userRepository.save(user);
-        log.info("Admin soft-deleted userId={}", userId);
+        log.info("Admin soft-deleted userId={} (phone/email cleared for reuse)", userId);
     }
 
     @Transactional
@@ -285,6 +299,7 @@ public class AdminService {
         user.setKycStatus(KycStatus.APPROVED);
         user.setStatus(UserStatus.ACTIVE);
         userRepository.save(user);
+        cascadePartnerDocumentStatus(partner, DocumentStatus.APPROVED);
         log.info("Admin approved KYC for partnerId={}", partnerId);
         return toPartnerResponse(partner);
     }
@@ -298,8 +313,22 @@ public class AdminService {
         }
         user.setKycStatus(KycStatus.REJECTED);
         userRepository.save(user);
+        cascadePartnerDocumentStatus(partner, DocumentStatus.REJECTED);
         log.info("Admin rejected KYC for partnerId={}, reason={}", partnerId, reason);
         return toPartnerResponse(partner);
+    }
+
+    // Same holistic-decision reasoning as cascadeOwnerDocumentStatus — there's
+    // no per-document review screen for partner KYC either, so the owner
+    // decision must carry onto every document the partner submitted.
+    private void cascadePartnerDocumentStatus(PartnerProfile partner, DocumentStatus status) {
+        List<PartnerDocument> docs = partnerDocumentRepository.findByPartnerIdAndDeletedFalse(partner.getId());
+        for (PartnerDocument doc : docs) {
+            if (doc.getStatus() == DocumentStatus.PENDING) {
+                doc.setStatus(status);
+            }
+        }
+        partnerDocumentRepository.saveAll(docs);
     }
 
     @Transactional(readOnly = true)
@@ -314,10 +343,6 @@ public class AdminService {
         partner.setVehicleType(request.vehicleType());
         partner.setVehicleNumber(request.vehicleNumber());
         partner.setCity(request.city());
-        partner.setBankAccountNumber(request.bankAccountNumber());
-        partner.setBankIfscCode(request.bankIfscCode());
-        partner.setBankName(request.bankName());
-        partner.setAccountHolderName(request.accountHolderName());
         PartnerProfile saved = partnerProfileRepository.save(partner);
         log.info("Admin updated partnerId={}", partnerId);
         return toPartnerResponse(saved);
@@ -472,6 +497,67 @@ public class AdminService {
         );
     }
 
+    // ===== PHONE CHANGE REQUESTS =====
+
+    @Transactional(readOnly = true)
+    public Page<PhoneChangeRequestResponse> listPhoneChangeRequests(DocumentStatus status, int page, int size) {
+        PageRequest pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
+        return phoneChangeRequestRepository.findAllForAdmin(status, pageable).map(this::toPhoneChangeResponse);
+    }
+
+    @Transactional
+    public PhoneChangeRequestResponse approvePhoneChangeRequest(Long requestId) {
+        PhoneChangeRequest request = findPhoneChangeRequest(requestId);
+        if (request.getStatus() != DocumentStatus.PENDING) {
+            throw new BusinessException("Request is not in PENDING state, current state: " + request.getStatus());
+        }
+        // Re-check uniqueness — the number could have been claimed by someone
+        // else in the time this request sat waiting for review.
+        if (userRepository.existsByPhoneNumber(request.getNewPhoneNumber())) {
+            throw new ConflictException("This phone number is already linked to another account.");
+        }
+
+        User user = request.getUser();
+        user.setPhoneNumber(request.getNewPhoneNumber());
+        userRepository.save(user);
+
+        request.setStatus(DocumentStatus.APPROVED);
+        PhoneChangeRequest saved = phoneChangeRequestRepository.save(request);
+        log.info("Admin approved phone change requestId={}, userId={}", requestId, user.getId());
+        return toPhoneChangeResponse(saved);
+    }
+
+    @Transactional
+    public PhoneChangeRequestResponse rejectPhoneChangeRequest(Long requestId, String reason) {
+        PhoneChangeRequest request = findPhoneChangeRequest(requestId);
+        if (request.getStatus() != DocumentStatus.PENDING) {
+            throw new BusinessException("Request is not in PENDING state, current state: " + request.getStatus());
+        }
+        request.setStatus(DocumentStatus.REJECTED);
+        request.setRemarks(reason);
+        PhoneChangeRequest saved = phoneChangeRequestRepository.save(request);
+        log.info("Admin rejected phone change requestId={}, reason={}", requestId, reason);
+        return toPhoneChangeResponse(saved);
+    }
+
+    private PhoneChangeRequest findPhoneChangeRequest(Long requestId) {
+        return phoneChangeRequestRepository.findById(requestId)
+                .orElseThrow(() -> new ResourceNotFoundException("PhoneChangeRequest", requestId));
+    }
+
+    private PhoneChangeRequestResponse toPhoneChangeResponse(PhoneChangeRequest r) {
+        return new PhoneChangeRequestResponse(
+                r.getId(),
+                r.getUser().getId(),
+                r.getUser().getFullName(),
+                r.getOldPhoneNumber(),
+                r.getNewPhoneNumber(),
+                r.getStatus(),
+                r.getRemarks(),
+                r.getCreatedAt()
+        );
+    }
+
     // ===== COMMISSION =====
 
     @Transactional(readOnly = true)
@@ -536,9 +622,7 @@ public class AdminService {
         return new PartnerProfileResponse(
                 partner.getId(), user.getId(), user.getPhoneNumber(), user.getFullName(),
                 user.getKycStatus(), partner.getVehicleType(), partner.getVehicleNumber(),
-                partner.getCity(), partner.getBankAccountNumber(), partner.getBankIfscCode(),
-                partner.getBankName(), partner.getAccountHolderName(),
-                partner.getTotalDeliveries(), partner.getCreatedAt());
+                partner.getCity(), partner.getTotalDeliveries(), partner.getCreatedAt());
     }
 
     private Bike findBike(Long bikeId) {

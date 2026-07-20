@@ -12,7 +12,9 @@ import com.puduvandi.delivery.repository.DeliverySettingsRepository;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.owner.repository.OwnerDocumentRepository;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
+import com.puduvandi.partner.repository.PartnerDocumentRepository;
 import com.puduvandi.partner.repository.PartnerProfileRepository;
+import com.puduvandi.user.repository.PhoneChangeRequestRepository;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -50,6 +52,8 @@ class AdminServiceDeliveryRateTest {
     @Mock private DeliverySettingsRepository deliverySettingsRepository;
     @Mock private UserDocumentRepository userDocumentRepository;
     @Mock private OwnerDocumentRepository ownerDocumentRepository;
+    @Mock private PhoneChangeRequestRepository phoneChangeRequestRepository;
+    @Mock private PartnerDocumentRepository partnerDocumentRepository;
     @Mock private JdbcTemplate jdbcTemplate;
 
     private AdminService adminService;
@@ -61,7 +65,8 @@ class AdminServiceDeliveryRateTest {
     void setUp() {
         adminService = new AdminService(userRepository, ownerProfileRepository, partnerProfileRepository,
                 bikeRepository, bookingRepository, commissionSettingsRepository,
-                deliverySettingsRepository, userDocumentRepository, ownerDocumentRepository, jdbcTemplate);
+                deliverySettingsRepository, userDocumentRepository, ownerDocumentRepository,
+                phoneChangeRequestRepository, partnerDocumentRepository, jdbcTemplate);
         admin = User.builder().id(ADMIN_ID).fullName("Admin One").build();
     }
 

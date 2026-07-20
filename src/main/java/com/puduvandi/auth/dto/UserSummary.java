@@ -12,6 +12,7 @@ public record UserSummary(
 
     Long id,
     String phoneNumber,
+    String email,
     String fullName,
     UserRole role,
     UserStatus status,

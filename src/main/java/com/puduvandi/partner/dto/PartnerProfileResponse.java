@@ -15,10 +15,6 @@ public record PartnerProfileResponse(
     String vehicleType,
     String vehicleNumber,
     String city,
-    String bankAccountNumber,
-    String bankIfscCode,
-    String bankName,
-    String accountHolderName,
     int totalDeliveries,
     LocalDateTime createdAt
 ) {}

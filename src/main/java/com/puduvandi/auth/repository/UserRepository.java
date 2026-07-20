@@ -20,6 +20,10 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     boolean existsByPhoneNumber(String phoneNumber);
 
+    Optional<User> findByEmailIgnoreCaseAndDeletedFalse(String email);
+
+    boolean existsByEmailIgnoreCase(String email);
+
     @Query("""
         SELECT u FROM User u
         WHERE u.deleted = false
