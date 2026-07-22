@@ -2,6 +2,7 @@ package com.puduvandi.booking.repository;
 
 import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DepositStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -18,6 +19,8 @@ import java.util.Optional;
 public interface BookingRepository extends JpaRepository<Booking, Long> {
 
     Optional<Booking> findByIdAndDeletedFalse(Long id);
+
+    Optional<Booking> findByIdAndOwner_UserIdAndDeletedFalse(Long id, Long ownerUserId);
 
     Optional<Booking> findByBookingReferenceAndDeletedFalse(String bookingReference);
 
@@ -98,4 +101,10 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
 
     /** Bookings still awaiting payment past the given cutoff — for the expiry sweep. */
     List<Booking> findAllByStatusAndCreatedAtBefore(BookingStatus status, LocalDateTime cutoff);
+
+    List<Booking> findAllByStatusAndDepositStatusAndActualReturnDatetimeBefore(
+            BookingStatus status, DepositStatus depositStatus, LocalDateTime cutoff);
+
+    Page<Booking> findByDepositStatusAndDeletedFalseOrderByUpdatedAtDesc(
+            DepositStatus depositStatus, Pageable pageable);
 }

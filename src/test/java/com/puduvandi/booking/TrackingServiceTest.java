@@ -6,6 +6,7 @@ import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.TrackingService;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.delivery.entity.DeliveryOrder;
@@ -123,7 +124,7 @@ class TrackingServiceTest {
     void getTracking_partnerDelivery_noOrderYet_returnsNone() {
         booking.setDeliveryType(DeliveryType.PARTNER_DELIVERY);
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.empty());
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.OUTBOUND)).thenReturn(Optional.empty());
 
         TrackingResponse response = trackingService.getTracking(BOOKING_ID, CUSTOMER_ID);
 
@@ -144,7 +145,7 @@ class TrackingServiceTest {
                 .build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.of(order));
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.OUTBOUND)).thenReturn(Optional.of(order));
 
         TrackingResponse response = trackingService.getTracking(BOOKING_ID, CUSTOMER_ID);
 
@@ -161,7 +162,7 @@ class TrackingServiceTest {
         DeliveryOrder order = DeliveryOrder.builder().id(500L).status(DeliveryStatus.DELIVERED).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.of(order));
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.OUTBOUND)).thenReturn(Optional.of(order));
 
         TrackingResponse response = trackingService.getTracking(BOOKING_ID, CUSTOMER_ID);
 
@@ -170,28 +171,32 @@ class TrackingServiceTest {
     }
 
     @Test
-    @DisplayName("getTracking: partner-delivery RETURN_COLLECTED tracks the partner returning to owner")
-    void getTracking_partnerDelivery_returnCollected_tracksPartner() {
+    @DisplayName("getTracking: partner-delivery RETURN_REQUESTED with return leg PICKED_UP tracks the partner returning to owner")
+    void getTracking_returnLeg_pickedUp_tracksPartner() {
         booking.setDeliveryType(DeliveryType.PARTNER_DELIVERY);
-        DeliveryOrder order = DeliveryOrder.builder().id(500L).status(DeliveryStatus.RETURN_COLLECTED).build();
+        booking.setStatus(BookingStatus.RETURN_REQUESTED);
+        DeliveryOrder order = DeliveryOrder.builder().id(501L).legType(DeliveryLegType.RETURN)
+                .status(DeliveryStatus.PICKED_UP).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.of(order));
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.RETURN)).thenReturn(Optional.of(order));
 
         TrackingResponse response = trackingService.getTracking(BOOKING_ID, OWNER_USER_ID);
 
         assertThat(response.trackingRole()).isEqualTo("PARTNER");
-        assertThat(response.phaseLabel()).isEqualTo("Partner returning to owner");
+        assertThat(response.phaseLabel()).isEqualTo("Partner returning bike to owner");
     }
 
     @Test
-    @DisplayName("getTracking: partner-delivery RETURN_COMPLETED returns NONE / Completed")
-    void getTracking_partnerDelivery_returnCompleted_returnsNone() {
+    @DisplayName("getTracking: partner-delivery RETURN_REQUESTED with return leg DELIVERED returns NONE / Completed")
+    void getTracking_returnLeg_delivered_returnsNone() {
         booking.setDeliveryType(DeliveryType.PARTNER_DELIVERY);
-        DeliveryOrder order = DeliveryOrder.builder().id(500L).status(DeliveryStatus.RETURN_COMPLETED).build();
+        booking.setStatus(BookingStatus.RETURN_REQUESTED);
+        DeliveryOrder order = DeliveryOrder.builder().id(501L).legType(DeliveryLegType.RETURN)
+                .status(DeliveryStatus.DELIVERED).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.of(order));
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.RETURN)).thenReturn(Optional.of(order));
 
         TrackingResponse response = trackingService.getTracking(BOOKING_ID, CUSTOMER_ID);
 

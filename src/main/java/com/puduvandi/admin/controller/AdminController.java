@@ -7,8 +7,9 @@ import com.puduvandi.bike.dto.UpdateBikeRequest;
 import com.puduvandi.booking.dto.BookingResponse;
 import com.puduvandi.common.dto.ApiResponse;
 import com.puduvandi.common.enums.*;
-import com.puduvandi.delivery.dto.DeliveryRateResponse;
-import com.puduvandi.delivery.dto.UpdateDeliveryRateRequest;
+import com.puduvandi.deposit.dto.DepositClaimResponse;
+import com.puduvandi.deposit.dto.FailedRefundResponse;
+import com.puduvandi.deposit.service.DepositClaimService;
 import com.puduvandi.owner.dto.CompleteOwnerProfileRequest;
 import com.puduvandi.owner.dto.OwnerProfileResponse;
 import com.puduvandi.partner.dto.CompletePartnerProfileRequest;
@@ -29,12 +30,13 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/v1/admin")
 @RequiredArgsConstructor
-@PreAuthorize("hasRole('ADMIN')")
-@Tag(name = "Admin", description = "Admin panel — user management, KYC, bike approval, commission")
+@PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+@Tag(name = "Admin", description = "Admin panel — KYC, bike approval, commission. User account data and all deletes live under /super-admin.")
 @SecurityRequirement(name = "bearerAuth")
 public class AdminController {
 
     private final AdminService adminService;
+    private final DepositClaimService depositClaimService;
 
     // ===== DASHBOARD =====
 
@@ -42,47 +44,6 @@ public class AdminController {
     @Operation(summary = "Get dashboard statistics")
     public ResponseEntity<ApiResponse<AdminDashboardStats>> getDashboard() {
         return ResponseEntity.ok(ApiResponse.success("Dashboard stats", adminService.getDashboardStats()));
-    }
-
-    // ===== USERS =====
-
-    @GetMapping("/users")
-    @Operation(summary = "List all users (paginated, filter by role/status)")
-    public ResponseEntity<ApiResponse<Page<AdminUserResponse>>> listUsers(
-            @RequestParam(required = false) UserRole role,
-            @RequestParam(required = false) UserStatus status,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
-
-        Page<AdminUserResponse> users = adminService.listUsers(role, status, page, size);
-        return ResponseEntity.ok(ApiResponse.success("Users fetched", users));
-    }
-
-    @DeleteMapping("/users/{userId}")
-    @Operation(summary = "Soft-delete a user account (preserves booking history)")
-    public ResponseEntity<ApiResponse<Void>> deleteUser(@PathVariable Long userId) {
-        adminService.deleteUser(userId);
-        return ResponseEntity.ok(ApiResponse.success("User deleted", null));
-    }
-
-    @PatchMapping("/users/{userId}/suspend")
-    @Operation(summary = "Suspend a user account")
-    public ResponseEntity<ApiResponse<AdminUserResponse>> suspendUser(@PathVariable Long userId) {
-        return ResponseEntity.ok(ApiResponse.success("User suspended", adminService.suspendUser(userId)));
-    }
-
-    @PatchMapping("/users/{userId}/unsuspend")
-    @Operation(summary = "Unsuspend a user account")
-    public ResponseEntity<ApiResponse<AdminUserResponse>> unsuspendUser(@PathVariable Long userId) {
-        return ResponseEntity.ok(ApiResponse.success("User unsuspended", adminService.unsuspendUser(userId)));
-    }
-
-    @PutMapping("/users/{userId}")
-    @Operation(summary = "Edit a user's basic profile fields")
-    public ResponseEntity<ApiResponse<AdminUserResponse>> updateUser(
-            @PathVariable Long userId,
-            @Valid @RequestBody AdminUpdateUserRequest request) {
-        return ResponseEntity.ok(ApiResponse.success("User updated", adminService.updateUser(userId, request)));
     }
 
     // ===== OWNER KYC =====
@@ -126,13 +87,6 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success("Owner updated", adminService.updateOwner(ownerId, request)));
     }
 
-    @DeleteMapping("/owners/{ownerId}")
-    @Operation(summary = "Soft-delete an owner profile (cascades to their bikes)")
-    public ResponseEntity<ApiResponse<Void>> deleteOwner(@PathVariable Long ownerId) {
-        adminService.deleteOwner(ownerId);
-        return ResponseEntity.ok(ApiResponse.success("Owner deleted", null));
-    }
-
     // ===== DELIVERY PARTNER KYC =====
 
     @GetMapping("/partners")
@@ -173,13 +127,6 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success("Partner updated", adminService.updatePartner(partnerId, request)));
     }
 
-    @DeleteMapping("/partners/{partnerId}")
-    @Operation(summary = "Soft-delete a delivery partner profile")
-    public ResponseEntity<ApiResponse<Void>> deletePartner(@PathVariable Long partnerId) {
-        adminService.deletePartner(partnerId);
-        return ResponseEntity.ok(ApiResponse.success("Partner deleted", null));
-    }
-
     // ===== BIKES =====
 
     @GetMapping("/bikes")
@@ -213,13 +160,6 @@ public class AdminController {
             @PathVariable Long bikeId,
             @Valid @RequestBody UpdateBikeRequest request) {
         return ResponseEntity.ok(ApiResponse.success("Bike updated", adminService.updateBike(bikeId, request)));
-    }
-
-    @DeleteMapping("/bikes/{bikeId}")
-    @Operation(summary = "Soft-delete a bike listing")
-    public ResponseEntity<ApiResponse<Void>> deleteBike(@PathVariable Long bikeId) {
-        adminService.deleteBike(bikeId);
-        return ResponseEntity.ok(ApiResponse.success("Bike deleted", null));
     }
 
     // ===== BOOKINGS =====
@@ -290,51 +230,52 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success("Phone change rejected", adminService.rejectPhoneChangeRequest(requestId, request.reason())));
     }
 
-    // ===== COMMISSION =====
+    // ===== DEPOSIT CLAIMS =====
 
-    @GetMapping("/commission")
-    @Operation(summary = "Get current commission settings")
-    public ResponseEntity<ApiResponse<CommissionResponse>> getCommission() {
-        return ResponseEntity.ok(ApiResponse.success("Commission fetched", adminService.getActiveCommission()));
+    @GetMapping("/deposit-claims")
+    @Operation(summary = "List security-deposit deduction claims (paginated, filter by status)")
+    public ResponseEntity<ApiResponse<Page<DepositClaimResponse>>> listDepositClaims(
+            @RequestParam(required = false) DocumentStatus status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        return ResponseEntity.ok(ApiResponse.success("Deposit claims fetched", depositClaimService.listClaims(status, page, size)));
     }
 
-    @PutMapping("/commission")
-    @Operation(summary = "Update platform commission percentage")
-    public ResponseEntity<ApiResponse<CommissionResponse>> updateCommission(
+    @PatchMapping("/deposit-claims/{claimId}/approve")
+    @Operation(summary = "Approve a deposit claim as filed — deducts the claimed amount and refunds the rest")
+    public ResponseEntity<ApiResponse<DepositClaimResponse>> approveDepositClaim(
             @AuthenticationPrincipal PuduvandiUserPrincipal principal,
-            @Valid @RequestBody UpdateCommissionRequest request) {
+            @PathVariable Long claimId) {
 
-        CommissionResponse response = adminService.updateCommission(principal.getUserId(), request);
-        return ResponseEntity.ok(ApiResponse.success("Commission updated to " + request.commissionPercent() + "%", response));
+        return ResponseEntity.ok(ApiResponse.success("Deposit claim approved",
+                depositClaimService.approveClaim(principal.getUserId(), claimId)));
     }
 
-    // ===== DELIVERY RATE =====
-
-    @GetMapping("/delivery-rate")
-    @Operation(summary = "Get current partner delivery rate settings")
-    public ResponseEntity<ApiResponse<DeliveryRateResponse>> getDeliveryRate() {
-        return ResponseEntity.ok(ApiResponse.success("Delivery rate fetched", adminService.getActiveDeliveryRate()));
-    }
-
-    @PutMapping("/delivery-rate")
-    @Operation(summary = "Update the platform's per-km partner delivery rate")
-    public ResponseEntity<ApiResponse<DeliveryRateResponse>> updateDeliveryRate(
+    @PatchMapping("/deposit-claims/{claimId}/reject")
+    @Operation(summary = "Reject a deposit claim with a reason — the customer's full deposit is refunded")
+    public ResponseEntity<ApiResponse<DepositClaimResponse>> rejectDepositClaim(
             @AuthenticationPrincipal PuduvandiUserPrincipal principal,
-            @Valid @RequestBody UpdateDeliveryRateRequest request) {
+            @PathVariable Long claimId,
+            @Valid @RequestBody RejectReasonRequest request) {
 
-        DeliveryRateResponse response = adminService.updateDeliveryRate(principal.getUserId(), request);
-        return ResponseEntity.ok(ApiResponse.success("Delivery rate updated to ₹" + request.ratePerKm() + "/km", response));
+        return ResponseEntity.ok(ApiResponse.success("Deposit claim rejected",
+                depositClaimService.rejectClaim(principal.getUserId(), claimId, request.reason())));
     }
 
-    // ===== LOCAL DATA RESET (DANGER — dev/test only) =====
+    @GetMapping("/deposit-claims/failed-refunds")
+    @Operation(summary = "List bookings whose deposit refund failed against Razorpay (paginated)")
+    public ResponseEntity<ApiResponse<Page<FailedRefundResponse>>> listFailedRefunds(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
 
-    @PostMapping("/reset-local-data")
-    @Operation(summary = "DANGER: wipe all owners/customers/partners/bikes/bookings, keep only ADMIN users. " +
-            "Blocked unless PUDUVANDI_ENV is unset or \"local\" — never staging/production.")
-    public ResponseEntity<ApiResponse<AdminDataResetResponse>> resetLocalData(
-            @Valid @RequestBody ResetLocalDataRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Failed refunds fetched", depositClaimService.listFailedRefunds(page, size)));
+    }
 
-        AdminDataResetResponse response = adminService.resetLocalData(request.confirmationPhrase());
-        return ResponseEntity.ok(ApiResponse.success("Local data reset complete", response));
+    @PostMapping("/deposit-claims/failed-refunds/{bookingId}/retry")
+    @Operation(summary = "Retry a previously-failed deposit refund")
+    public ResponseEntity<ApiResponse<Void>> retryFailedRefund(@PathVariable Long bookingId) {
+        depositClaimService.retryFailedRefund(bookingId);
+        return ResponseEntity.ok(ApiResponse.success("Refund retried — check the booking's deposit status for the outcome"));
     }
 }

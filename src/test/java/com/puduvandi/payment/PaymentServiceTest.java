@@ -1,9 +1,11 @@
 package com.puduvandi.payment;
 
+import com.puduvandi.auth.entity.User;
 import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DepositStatus;
 import com.puduvandi.common.enums.PaymentStatus;
 import com.puduvandi.common.enums.PaymentType;
 import com.puduvandi.config.RazorpayConfig;
@@ -50,6 +52,7 @@ class PaymentServiceTest {
     @Mock private BookingRepository bookingRepository;
     @Mock private BookingService bookingService;
     @Mock private ErrorLogService errorLogService;
+    @Mock private com.puduvandi.push.service.WebPushService webPushService;
 
     private RazorpayConfig razorpayConfig;
     private PaymentService paymentService;
@@ -70,7 +73,7 @@ class PaymentServiceTest {
         razorpayConfig.setPaymentExpiryMinutes(15);
 
         paymentService = new PaymentService(paymentRepository, bookingRepository, bookingService,
-                razorpayConfig, errorLogService);
+                razorpayConfig, errorLogService, webPushService);
 
         payment = Payment.builder()
                 .id(500L)
@@ -282,5 +285,102 @@ class PaymentServiceTest {
                 .hasMessageContaining("does not belong to you");
 
         verify(bookingRepository, never()).findAllByPayment_Id(any());
+    }
+
+    // ===== refundDeposit =====
+
+    private Booking depositBooking(BigDecimal securityDeposit, Payment payment) {
+        return Booking.builder()
+                .id(10L)
+                .bookingReference("PV-20260717-0010")
+                .status(BookingStatus.COMPLETED)
+                .customer(User.builder().id(CUSTOMER_ID).build())
+                .totalAmount(new BigDecimal("2000.00"))
+                .securityDeposit(securityDeposit)
+                .depositStatus(DepositStatus.HELD)
+                .payment(payment)
+                .build();
+    }
+
+    @Test
+    @DisplayName("refundDeposit: zero amount forfeits the deposit without any Razorpay call")
+    void refundDeposit_zeroAmount_forfeits() {
+        Booking booking = depositBooking(new BigDecimal("500.00"), payment);
+
+        paymentService.refundDeposit(booking, BigDecimal.ZERO);
+
+        assertThat(booking.getDepositStatus()).isEqualTo(DepositStatus.REFUNDED);
+        assertThat(booking.getDepositRefundAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(booking.getDepositRefundedAt()).isNotNull();
+        verifyNoInteractions(errorLogService);
+    }
+
+    @Test
+    @DisplayName("refundDeposit: mock mode simulates the refund without a real Razorpay call")
+    void refundDeposit_mockMode_simulates() {
+        razorpayConfig.setMockEnabled(true);
+        Booking booking = depositBooking(new BigDecimal("500.00"), payment);
+
+        paymentService.refundDeposit(booking, new BigDecimal("500.00"));
+
+        assertThat(booking.getDepositStatus()).isEqualTo(DepositStatus.REFUNDED);
+        assertThat(booking.getDepositRefundAmount()).isEqualByComparingTo("500.00");
+        verifyNoInteractions(errorLogService);
+    }
+
+    @Test
+    @DisplayName("refundDeposit: no real payment on the booking (mock-confirmed) simulates the refund")
+    void refundDeposit_noPayment_simulates() {
+        Booking booking = depositBooking(new BigDecimal("500.00"), null);
+
+        paymentService.refundDeposit(booking, new BigDecimal("300.00"));
+
+        assertThat(booking.getDepositStatus()).isEqualTo(DepositStatus.REFUNDED);
+        assertThat(booking.getDepositRefundAmount()).isEqualByComparingTo("300.00");
+        verifyNoInteractions(errorLogService);
+    }
+
+    @Test
+    @DisplayName("refundDeposit: a real Razorpay call that fails is recorded as REFUND_FAILED, not thrown")
+    void refundDeposit_realCallFails_marksFailed() {
+        payment.setRazorpayPaymentId(RAZORPAY_PAYMENT_ID);
+        Booking booking = depositBooking(new BigDecimal("500.00"), payment);
+
+        // fake keys against the real Razorpay API — expected to fail fast, same
+        // "no real Razorpay reachable in a unit test" convention as createOrder's tests.
+        assertThatCode(() -> paymentService.refundDeposit(booking, new BigDecimal("500.00")))
+                .doesNotThrowAnyException();
+
+        assertThat(booking.getDepositStatus()).isEqualTo(DepositStatus.REFUND_FAILED);
+        verify(errorLogService).logServiceError(any(), eq("Booking"), eq(10L), eq(CUSTOMER_ID));
+    }
+
+    // ===== releaseUnclaimedDeposits =====
+
+    @Test
+    @DisplayName("releaseUnclaimedDeposits: refunds every eligible booking in full")
+    void releaseUnclaimedDeposits_refundsEligibleBookings() {
+        razorpayConfig.setMockEnabled(true);
+        Booking booking = depositBooking(new BigDecimal("500.00"), null);
+        when(bookingRepository.findAllByStatusAndDepositStatusAndActualReturnDatetimeBefore(
+                eq(BookingStatus.COMPLETED), eq(DepositStatus.HELD), any()))
+                .thenReturn(List.of(booking));
+
+        paymentService.releaseUnclaimedDeposits(48);
+
+        assertThat(booking.getDepositStatus()).isEqualTo(DepositStatus.REFUNDED);
+        assertThat(booking.getDepositRefundAmount()).isEqualByComparingTo("500.00");
+    }
+
+    @Test
+    @DisplayName("releaseUnclaimedDeposits: no eligible bookings is a no-op")
+    void releaseUnclaimedDeposits_noneEligible_noop() {
+        when(bookingRepository.findAllByStatusAndDepositStatusAndActualReturnDatetimeBefore(
+                eq(BookingStatus.COMPLETED), eq(DepositStatus.HELD), any()))
+                .thenReturn(List.of());
+
+        paymentService.releaseUnclaimedDeposits(48);
+
+        verify(bookingRepository, never()).save(any());
     }
 }

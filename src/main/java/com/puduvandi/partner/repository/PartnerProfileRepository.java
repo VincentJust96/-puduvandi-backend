@@ -8,12 +8,16 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface PartnerProfileRepository extends JpaRepository<PartnerProfile, Long> {
 
     Optional<PartnerProfile> findByUserIdAndDeletedFalse(Long userId);
+
+    @Query("SELECT pp FROM PartnerProfile pp JOIN pp.user u WHERE pp.deleted = false AND u.kycStatus = :kycStatus")
+    List<PartnerProfile> findAllByUserKycStatusAndDeletedFalse(KycStatus kycStatus);
 
     boolean existsByUserId(Long userId);
 

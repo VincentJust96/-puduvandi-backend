@@ -68,63 +68,33 @@ class AuthServiceTest {
     // ===== sendOtp Tests =====
 
     @Test
-    @DisplayName("sendOtp: should create new user if not exists")
+    @DisplayName("sendOtp: only records the OTP — never touches the user table (account is created/reactivated in verifyOtp)")
     void sendOtp_newUser_shouldRegisterAndSaveOtp() {
         SendOtpRequest request = new SendOtpRequest("9876543210");
 
-        when(userRepository.findByPhoneNumber("9876543210")).thenReturn(Optional.empty());
         when(otpProperties.isMockEnabled()).thenReturn(true);
         when(otpProperties.getMockOtp()).thenReturn("123456");
         when(otpProperties.getExpiryMinutes()).thenReturn(5);
 
         authService.sendOtp(request);
 
-        verify(userRepository).save(any(User.class));
         verify(otpRecordRepository).save(any(OtpRecord.class));
+        verifyNoInteractions(userRepository);
     }
 
     @Test
-    @DisplayName("sendOtp: should NOT create/modify user if already exists and active")
+    @DisplayName("sendOtp: existing user's phone number behaves identically — no user lookup or save")
     void sendOtp_existingUser_shouldNotCreateDuplicate() {
         SendOtpRequest request = new SendOtpRequest("9876543210");
 
-        when(userRepository.findByPhoneNumber("9876543210")).thenReturn(Optional.of(activeUser));
         when(otpProperties.isMockEnabled()).thenReturn(true);
         when(otpProperties.getMockOtp()).thenReturn("123456");
         when(otpProperties.getExpiryMinutes()).thenReturn(5);
 
         authService.sendOtp(request);
 
-        verify(userRepository, never()).save(any(User.class));
         verify(otpRecordRepository).save(any(OtpRecord.class));
-    }
-
-    @Test
-    @DisplayName("sendOtp: soft-deleted user with same phone number is reactivated, not duplicated")
-    void sendOtp_softDeletedUser_shouldReactivate() {
-        SendOtpRequest request = new SendOtpRequest("9876543210");
-        User deletedUser = User.builder()
-                .id(2L)
-                .phoneNumber("9876543210")
-                .role(UserRole.CUSTOMER)
-                .status(UserStatus.ACTIVE)
-                .kycStatus(KycStatus.APPROVED)
-                .deleted(true)
-                .build();
-
-        when(userRepository.findByPhoneNumber("9876543210")).thenReturn(Optional.of(deletedUser));
-        when(otpProperties.isMockEnabled()).thenReturn(true);
-        when(otpProperties.getMockOtp()).thenReturn("123456");
-        when(otpProperties.getExpiryMinutes()).thenReturn(5);
-
-        authService.sendOtp(request);
-
-        verify(userRepository).save(argThat(u ->
-                !u.isDeleted()
-                && u.getRole() == null
-                && u.getStatus() == UserStatus.PENDING_VERIFICATION
-                && u.getKycStatus() == KycStatus.NOT_SUBMITTED));
-        verify(otpRecordRepository).save(any(OtpRecord.class));
+        verifyNoInteractions(userRepository);
     }
 
     // ===== verifyOtp Tests =====
@@ -146,7 +116,7 @@ class AuthServiceTest {
                 .expiresAt(LocalDateTime.now().plusDays(7))
                 .build();
 
-        when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210"))
+        when(userRepository.findByPhoneNumber("9876543210"))
                 .thenReturn(Optional.of(activeUser));
         when(otpRecordRepository.findLatestValidOtp(eq("9876543210"), any()))
                 .thenReturn(Optional.of(validOtp));
@@ -161,6 +131,78 @@ class AuthServiceTest {
         assertThat(response.accessToken()).isEqualTo("access-token-xyz");
         assertThat(response.tokenType()).isEqualTo("Bearer");
         assertThat(response.user().phoneNumber()).isEqualTo("9876543210");
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    @DisplayName("verifyOtp: new phone number creates the user account only now, not during sendOtp")
+    void verifyOtp_newUser_shouldRegisterUser() {
+        VerifyOtpRequest request = new VerifyOtpRequest("9876543210", "123456");
+
+        OtpRecord validOtp = OtpRecord.builder()
+                .otpCode("123456")
+                .used(false)
+                .expiresAt(LocalDateTime.now().plusMinutes(4))
+                .build();
+
+        User created = User.builder()
+                .id(3L)
+                .phoneNumber("9876543210")
+                .role(null)
+                .status(UserStatus.ACTIVE)
+                .kycStatus(KycStatus.NOT_SUBMITTED)
+                .deleted(false)
+                .build();
+
+        when(userRepository.findByPhoneNumber("9876543210")).thenReturn(Optional.empty());
+        when(otpRecordRepository.findLatestValidOtp(eq("9876543210"), any()))
+                .thenReturn(Optional.of(validOtp));
+        when(userRepository.save(any(User.class))).thenReturn(created);
+        when(jwtUtil.generateAccessToken(3L, "9876543210", "NEW_USER")).thenReturn("access-token-xyz");
+        when(jwtProperties.getRefreshTokenExpiryMs()).thenReturn(604800000L);
+
+        AuthTokenResponse response = authService.verifyOtp(request);
+
+        assertThat(response.user().isNewUser()).isTrue();
+        verify(userRepository).save(argThat(u ->
+                u.getPhoneNumber().equals("9876543210")
+                && u.getRole() == null
+                && !u.isDeleted()));
+    }
+
+    @Test
+    @DisplayName("verifyOtp: soft-deleted user with same phone number is reactivated, not duplicated")
+    void verifyOtp_softDeletedUser_shouldReactivate() {
+        VerifyOtpRequest request = new VerifyOtpRequest("9876543210", "123456");
+        User deletedUser = User.builder()
+                .id(2L)
+                .phoneNumber("9876543210")
+                .role(UserRole.CUSTOMER)
+                .status(UserStatus.ACTIVE)
+                .kycStatus(KycStatus.APPROVED)
+                .deleted(true)
+                .build();
+
+        OtpRecord validOtp = OtpRecord.builder()
+                .otpCode("123456")
+                .used(false)
+                .expiresAt(LocalDateTime.now().plusMinutes(4))
+                .build();
+
+        when(userRepository.findByPhoneNumber("9876543210")).thenReturn(Optional.of(deletedUser));
+        when(otpRecordRepository.findLatestValidOtp(eq("9876543210"), any()))
+                .thenReturn(Optional.of(validOtp));
+        when(userRepository.save(any(User.class))).thenReturn(deletedUser);
+        when(jwtUtil.generateAccessToken(eq(2L), eq("9876543210"), any())).thenReturn("access-token-xyz");
+        when(jwtProperties.getRefreshTokenExpiryMs()).thenReturn(604800000L);
+
+        authService.verifyOtp(request);
+
+        verify(userRepository).save(argThat(u ->
+                !u.isDeleted()
+                && u.getRole() == null
+                && u.getStatus() == UserStatus.ACTIVE
+                && u.getKycStatus() == KycStatus.NOT_SUBMITTED));
     }
 
     @Test
@@ -174,8 +216,6 @@ class AuthServiceTest {
                 .expiresAt(LocalDateTime.now().plusMinutes(4))
                 .build();
 
-        when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210"))
-                .thenReturn(Optional.of(activeUser));
         when(otpRecordRepository.findLatestValidOtp(eq("9876543210"), any()))
                 .thenReturn(Optional.of(validOtp));
 
@@ -190,7 +230,15 @@ class AuthServiceTest {
         activeUser.setStatus(UserStatus.SUSPENDED);
         VerifyOtpRequest request = new VerifyOtpRequest("9876543210", "123456");
 
-        when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210"))
+        OtpRecord validOtp = OtpRecord.builder()
+                .otpCode("123456")
+                .used(false)
+                .expiresAt(LocalDateTime.now().plusMinutes(4))
+                .build();
+
+        when(otpRecordRepository.findLatestValidOtp(eq("9876543210"), any()))
+                .thenReturn(Optional.of(validOtp));
+        when(userRepository.findByPhoneNumber("9876543210"))
                 .thenReturn(Optional.of(activeUser));
 
         assertThatThrownBy(() -> authService.verifyOtp(request))

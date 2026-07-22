@@ -160,7 +160,7 @@ public class AuthService {
         }
 
         // Only CUSTOMER and OWNER are valid self-selected roles
-        if (role == UserRole.ADMIN) {
+        if (role == UserRole.ADMIN || role == UserRole.SUPER_ADMIN) {
             throw new BusinessException("Invalid role selection.");
         }
 

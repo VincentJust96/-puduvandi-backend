@@ -4,6 +4,7 @@ import com.puduvandi.booking.dto.TrackingResponse;
 import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.delivery.entity.DeliveryOrder;
@@ -65,21 +66,20 @@ public class TrackingService {
     }
 
     private TrackingResponse resolvePartnerDelivery(Booking booking) {
-        Optional<DeliveryOrder> orderOpt = deliveryOrderRepository.findByBookingId(booking.getId());
+        boolean isReturnPhase = booking.getStatus() == BookingStatus.RETURN_REQUESTED;
+        DeliveryLegType legType = isReturnPhase ? DeliveryLegType.RETURN : DeliveryLegType.OUTBOUND;
+
+        Optional<DeliveryOrder> orderOpt = deliveryOrderRepository.findByBookingIdAndLegType(booking.getId(), legType);
         if (orderOpt.isEmpty()) {
-            return none("Pickup Scheduled");
+            return isReturnPhase ? none("Waiting for delivery partner") : none("Pickup Scheduled");
         }
         DeliveryOrder order = orderOpt.get();
 
         return switch (order.getStatus()) {
             case PENDING -> none("Waiting for delivery partner");
-            case CLAIMED -> fromPartner(order, "Partner en route to pickup");
-            case PICKED_UP -> fromPartner(order, "In Transit to Customer");
-            case DELIVERED -> booking.getStatus() == BookingStatus.RETURN_REQUESTED
-                    ? fromCustomer(booking, "Return Scheduled")
-                    : fromCustomer(booking, "Ride In Progress");
-            case RETURN_COLLECTED -> fromPartner(order, "Partner returning to owner");
-            case RETURN_COMPLETED -> none("Completed");
+            case CLAIMED -> fromPartner(order, isReturnPhase ? "Partner en route to collect bike" : "Partner en route to pickup");
+            case PICKED_UP -> fromPartner(order, isReturnPhase ? "Partner returning bike to owner" : "In Transit to Customer");
+            case DELIVERED -> isReturnPhase ? none("Completed") : fromCustomer(booking, "Ride In Progress");
             case CANCELLED -> none("Cancelled");
         };
     }

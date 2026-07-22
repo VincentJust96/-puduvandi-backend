@@ -2,6 +2,7 @@ package com.puduvandi.booking.dto;
 
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.DeliveryType;
+import com.puduvandi.common.enums.DepositStatus;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -42,5 +43,8 @@ public record BookingResponse(
      * there's no separate admin approval step for it. Null if the customer
      * hasn't uploaded one (or it was later removed).
      */
-    String customerLicenceUrl
+    String customerLicenceUrl,
+    DepositStatus depositStatus,
+    /** Set once depositStatus reaches REFUNDED — 0 means the deposit was fully forfeited. */
+    BigDecimal depositRefundAmount
 ) {}

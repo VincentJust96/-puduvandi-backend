@@ -5,6 +5,7 @@ import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.common.enums.HandoverPurpose;
 import com.puduvandi.delivery.entity.DeliveryOrder;
@@ -212,7 +213,7 @@ class HandoverOtpServiceTest {
         DeliveryOrder order = DeliveryOrder.builder().id(500L).booking(booking).partner(null).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.of(order));
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.OUTBOUND)).thenReturn(Optional.of(order));
 
         assertThatThrownBy(() -> handoverOtpService.generate(BOOKING_ID, HandoverPurpose.PICKUP_PARTNER, PARTNER_ID))
                 .isInstanceOf(BusinessException.class)
@@ -319,7 +320,7 @@ class HandoverOtpServiceTest {
                 .expiresAt(LocalDateTime.now().plusMinutes(5)).used(false).failedAttempts(0).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.of(order));
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.RETURN)).thenReturn(Optional.of(order));
         when(handoverOtpRepository.findLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.RETURN_FINAL), any()))
                 .thenReturn(Optional.of(otp));
 
@@ -327,7 +328,7 @@ class HandoverOtpServiceTest {
                 BOOKING_ID, HandoverPurpose.RETURN_FINAL, "482913", PARTNER_ID);
 
         assertThat(response.verified()).isTrue();
-        verify(deliveryService).transitionToReturnCompleted(500L);
+        verify(deliveryService).transitionToDelivered(500L);
         verify(bookingService).completeBooking(BOOKING_ID);
     }
 
@@ -339,7 +340,7 @@ class HandoverOtpServiceTest {
         DeliveryOrder order = DeliveryOrder.builder().id(500L).booking(booking).partner(partner).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(deliveryOrderRepository.findByBookingId(BOOKING_ID)).thenReturn(Optional.of(order));
+        when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.RETURN)).thenReturn(Optional.of(order));
 
         assertThatThrownBy(() -> handoverOtpService.verify(
                 BOOKING_ID, HandoverPurpose.RETURN_TO_PARTNER, "482913", OWNER_USER_ID))

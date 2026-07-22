@@ -4,16 +4,20 @@ import com.puduvandi.auth.entity.User;
 import com.puduvandi.auth.repository.UserRepository;
 import com.puduvandi.bike.entity.Bike;
 import com.puduvandi.booking.entity.Booking;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 import com.puduvandi.common.enums.KycStatus;
 import com.puduvandi.delivery.dto.PartnerDeliveryResponse;
 import com.puduvandi.delivery.entity.DeliveryOrder;
+import com.puduvandi.delivery.entity.DeliverySettings;
 import com.puduvandi.delivery.repository.DeliveryOrderRepository;
 import com.puduvandi.delivery.repository.DeliverySettingsRepository;
 import com.puduvandi.delivery.service.DeliveryService;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
+import com.puduvandi.partner.repository.PartnerProfileRepository;
+import com.puduvandi.push.service.WebPushService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -35,6 +39,8 @@ class DeliveryServiceTest {
     @Mock private DeliveryOrderRepository deliveryOrderRepository;
     @Mock private DeliverySettingsRepository deliverySettingsRepository;
     @Mock private UserRepository userRepository;
+    @Mock private PartnerProfileRepository partnerProfileRepository;
+    @Mock private WebPushService webPushService;
 
     private DeliveryService deliveryService;
 
@@ -47,12 +53,15 @@ class DeliveryServiceTest {
 
     @BeforeEach
     void setUp() {
-        deliveryService = new DeliveryService(deliveryOrderRepository, deliverySettingsRepository, userRepository);
+        deliveryService = new DeliveryService(deliveryOrderRepository, deliverySettingsRepository, userRepository,
+                partnerProfileRepository, webPushService);
 
         partner = User.builder().id(PARTNER_ID).kycStatus(KycStatus.APPROVED).build();
-        bike = Bike.builder().id(10L).brand("Honda").model("Activa").build();
+        bike = Bike.builder().id(10L).brand("Honda").model("Activa")
+                .latitude(new BigDecimal("11.9300")).longitude(new BigDecimal("79.8300")).build();
         User customer = User.builder().id(1L).fullName("Cust Name").phoneNumber("9000000001").build();
-        booking = Booking.builder().id(100L).bookingReference("PV-1").bike(bike).customer(customer).build();
+        booking = Booking.builder().id(100L).bookingReference("PV-1").bike(bike).customer(customer)
+                .dropoffLatitude(new BigDecimal("11.9500")).dropoffLongitude(new BigDecimal("79.8100")).build();
     }
 
     // ===== claim() =====
@@ -154,29 +163,47 @@ class DeliveryServiceTest {
                 .hasMessageContaining("must be picked up");
     }
 
+    // ===== createReturnDeliveryOrder() =====
+
     @Test
-    @DisplayName("transitionToReturnCollected: from DELIVERED succeeds")
-    void transitionToReturnCollected_fromDelivered_succeeds() {
-        DeliveryOrder order = DeliveryOrder.builder().id(DELIVERY_ID).booking(booking)
-                .status(DeliveryStatus.DELIVERED).build();
-        when(deliveryOrderRepository.findById(DELIVERY_ID)).thenReturn(Optional.of(order));
+    @DisplayName("createReturnDeliveryOrder: creates a PENDING RETURN-leg order, customer -> bike's base, its own fee")
+    void createReturnDeliveryOrder_createsIndependentReturnLeg() {
+        DeliverySettings settings = DeliverySettings.builder().ratePerKm(new BigDecimal("15.00")).active(true).build();
+        when(deliverySettingsRepository.findTopByActiveTrueOrderByIdDesc()).thenReturn(Optional.of(settings));
 
-        PartnerDeliveryResponse response = deliveryService.transitionToReturnCollected(DELIVERY_ID);
+        deliveryService.createReturnDeliveryOrder(booking);
 
-        assertThat(response.status()).isEqualTo(DeliveryStatus.RETURN_COLLECTED);
-        assertThat(order.getReturnCollectedAt()).isNotNull();
+        var captor = org.mockito.ArgumentCaptor.forClass(DeliveryOrder.class);
+        verify(deliveryOrderRepository).save(captor.capture());
+        DeliveryOrder saved = captor.getValue();
+
+        assertThat(saved.getLegType()).isEqualTo(DeliveryLegType.RETURN);
+        assertThat(saved.getStatus()).isEqualTo(DeliveryStatus.PENDING);
+        assertThat(saved.getPartner()).isNull();
+        // Pickup is the customer's drop-off point; final drop-off is the bike's own base — reversed vs. the outbound leg.
+        assertThat(saved.getPickupLatitude()).isEqualTo(booking.getDropoffLatitude());
+        assertThat(saved.getPickupLongitude()).isEqualTo(booking.getDropoffLongitude());
+        assertThat(saved.getDropoffLatitude()).isEqualTo(bike.getLatitude());
+        assertThat(saved.getDropoffLongitude()).isEqualTo(bike.getLongitude());
+        assertThat(saved.getDeliveryFee()).isGreaterThan(BigDecimal.ZERO);
     }
 
-    @Test
-    @DisplayName("transitionToReturnCompleted: from wrong status (DELIVERED, not yet collected) is rejected")
-    void transitionToReturnCompleted_wrongStatus_shouldThrow() {
-        DeliveryOrder order = DeliveryOrder.builder().id(DELIVERY_ID).booking(booking)
-                .status(DeliveryStatus.DELIVERED).build();
-        when(deliveryOrderRepository.findById(DELIVERY_ID)).thenReturn(Optional.of(order));
+    // ===== leg-aware customer-contact visibility =====
 
-        assertThatThrownBy(() -> deliveryService.transitionToReturnCompleted(DELIVERY_ID))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("must be collected");
+    @Test
+    @DisplayName("RETURN leg: customer contact is visible as soon as CLAIMED (customer is the return pickup point)")
+    void returnLeg_contactVisible_assoonAsClaimed() {
+        DeliveryOrder order = DeliveryOrder.builder().id(DELIVERY_ID).booking(booking)
+                .legType(DeliveryLegType.RETURN).status(DeliveryStatus.PENDING).build();
+
+        when(userRepository.findById(PARTNER_ID)).thenReturn(Optional.of(partner));
+        when(deliveryOrderRepository.lockById(DELIVERY_ID)).thenReturn(Optional.of(order));
+
+        PartnerDeliveryResponse response = deliveryService.claim(PARTNER_ID, DELIVERY_ID);
+
+        assertThat(response.status()).isEqualTo(DeliveryStatus.CLAIMED);
+        assertThat(response.customerName()).isEqualTo("Cust Name");
+        assertThat(response.customerPhone()).isEqualTo("9000000001");
     }
 
     // ===== updatePartnerLocation() =====

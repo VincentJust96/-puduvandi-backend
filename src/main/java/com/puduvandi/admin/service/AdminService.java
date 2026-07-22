@@ -142,7 +142,7 @@ public class AdminService {
     @Transactional
     public AdminUserResponse suspendUser(Long userId) {
         User user = findUser(userId);
-        if (user.getRole() == UserRole.ADMIN) {
+        if (user.getRole() == UserRole.ADMIN || user.getRole() == UserRole.SUPER_ADMIN) {
             throw new BusinessException("Cannot suspend an admin account");
         }
         if (user.getStatus() == UserStatus.SUSPENDED) {
@@ -157,7 +157,7 @@ public class AdminService {
     @Transactional
     public void deleteUser(Long userId) {
         User user = findUser(userId);
-        if (user.getRole() == UserRole.ADMIN) {
+        if (user.getRole() == UserRole.ADMIN || user.getRole() == UserRole.SUPER_ADMIN) {
             throw new BusinessException("Cannot delete an admin account");
         }
         if (user.getRole() == UserRole.OWNER) {
@@ -765,7 +765,9 @@ public class AdminService {
                 userDocumentRepository
                         .findByUserIdAndDocumentTypeAndDeletedFalse(booking.getCustomer().getId(), DocumentType.DRIVING_LICENSE)
                         .map(UserDocument::getDocumentUrl)
-                        .orElse(null)
+                        .orElse(null),
+                booking.getDepositStatus(),
+                booking.getDepositRefundAmount()
         );
     }
 
@@ -818,7 +820,7 @@ public class AdminService {
 
     /**
      * Wipes every owner, customer, partner, bike, booking and related row,
-     * leaving only ADMIN users behind. Refuses to run unless PUDUVANDI_ENV is
+     * leaving only ADMIN/SUPER_ADMIN users behind. Refuses to run unless PUDUVANDI_ENV is
      * unset or "local" — never staging/production — and requires the caller
      * to echo back {@value #RESET_CONFIRMATION_PHRASE} to guard against an
      * accidental click/replay.
@@ -840,7 +842,7 @@ public class AdminService {
         log.warn("ADMIN DATA RESET triggered — wiping all non-admin data (PUDUVANDI_ENV={})", env);
 
         jdbcTemplate.execute(RESET_TRUNCATE_SQL);
-        int usersRemoved = jdbcTemplate.update("DELETE FROM users WHERE role IS DISTINCT FROM 'ADMIN'");
+        int usersRemoved = jdbcTemplate.update("DELETE FROM users WHERE role NOT IN ('ADMIN', 'SUPER_ADMIN') OR role IS NULL");
 
         log.warn("ADMIN DATA RESET complete — {} non-admin user(s) removed", usersRemoved);
 

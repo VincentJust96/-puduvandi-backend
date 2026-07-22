@@ -47,6 +47,7 @@ class BookingServiceTransitionTest {
     @Mock private BookingConfirmationService bookingConfirmationService;
     @Mock private DeliveryService deliveryService;
     @Mock private UserDocumentRepository userDocumentRepository;
+    @Mock private com.puduvandi.push.service.WebPushService webPushService;
 
     private BookingService bookingService;
 
@@ -58,7 +59,7 @@ class BookingServiceTransitionTest {
     @BeforeEach
     void setUp() {
         bookingService = new BookingService(bookingRepository, bikeRepository, userRepository,
-                bookingConfirmationService, deliveryService, userDocumentRepository);
+                bookingConfirmationService, deliveryService, userDocumentRepository, webPushService);
 
         User customer = User.builder().id(1L).fullName("Cust").build();
         bike = Bike.builder().id(10L).brand("Honda").model("Activa").registrationNumber("KA-01-AB-1234")

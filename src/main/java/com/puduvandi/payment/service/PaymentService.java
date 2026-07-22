@@ -4,6 +4,7 @@ import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DepositStatus;
 import com.puduvandi.common.enums.PaymentStatus;
 import com.puduvandi.common.enums.PaymentType;
 import com.puduvandi.config.RazorpayConfig;
@@ -13,9 +14,11 @@ import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.payment.dto.PaymentOrderResponse;
 import com.puduvandi.payment.entity.Payment;
 import com.puduvandi.payment.repository.PaymentRepository;
+import com.puduvandi.push.service.WebPushService;
 import com.razorpay.Order;
 import com.razorpay.RazorpayClient;
 import com.razorpay.RazorpayException;
+import com.razorpay.Refund;
 import com.razorpay.Utils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -50,6 +53,7 @@ public class PaymentService {
     private final BookingService bookingService;
     private final RazorpayConfig razorpayConfig;
     private final ErrorLogService errorLogService;
+    private final WebPushService webPushService;
 
     /**
      * Creates (or re-creates, for a retry) a Payment covering all given bookings and asks
@@ -225,6 +229,94 @@ public class PaymentService {
         log.info("Payment verified and captured: paymentId={}, razorpayOrderId={}, type={}, bookings={}",
                 payment.getId(), razorpayOrderId, payment.getType(), bookingIds);
         return bookingIds;
+    }
+
+    /**
+     * Resolves a completed booking's security deposit — called by DepositClaimService
+     * (claim approved/rejected) and DepositReleaseTask (auto-release after the grace
+     * period). Never throws past the caller: both callers process bookings in a batch
+     * and one Razorpay failure shouldn't abort the rest — a failure is recorded as
+     * REFUND_FAILED (visible to admin) rather than silently retried or swallowed.
+     * <p>
+     * Refunds against whatever {@code booking.getPayment()} currently points to (the
+     * payment that most recently settled the booking) — see the plan's "known scoping
+     * trade-off" note: this is always correct for the FULL plan and correct in the
+     * overwhelming majority of DEPOSIT-plan cases, since there's no history table
+     * linking a booking to every payment it ever had.
+     */
+    @Transactional
+    public void refundDeposit(Booking booking, BigDecimal refundAmount) {
+        if (refundAmount.compareTo(BigDecimal.ZERO) == 0) {
+            markRefunded(booking, BigDecimal.ZERO);
+            log.info("Deposit forfeited (no refund): bookingId={}", booking.getId());
+            return;
+        }
+
+        Payment payment = booking.getPayment();
+        if (payment == null || razorpayConfig.isMockEnabled()) {
+            markRefunded(booking, refundAmount);
+            log.info("Deposit refund simulated (mock/no real payment): bookingId={}, amount={}",
+                    booking.getId(), refundAmount);
+            return;
+        }
+
+        long amountInPaise = refundAmount.setScale(2, RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100))
+                .longValueExact();
+
+        try {
+            RazorpayClient client = new RazorpayClient(razorpayConfig.getKeyId(), razorpayConfig.getKeySecret());
+            JSONObject refundRequest = new JSONObject();
+            refundRequest.put("amount", amountInPaise);
+            Refund refund = client.payments.refund(payment.getRazorpayPaymentId(), refundRequest);
+
+            markRefunded(booking, refundAmount);
+            log.info("Deposit refunded: bookingId={}, razorpayRefundId={}, amount={}",
+                    booking.getId(), refund.get("id").toString(), refundAmount);
+        } catch (RazorpayException ex) {
+            booking.setDepositStatus(DepositStatus.REFUND_FAILED);
+            // Doubles as "amount attempted" on failure (vs. "amount actually
+            // refunded" on success) so retryFailedRefund() knows what to retry
+            // without needing a separate column.
+            booking.setDepositRefundAmount(refundAmount);
+            bookingRepository.save(booking);
+            errorLogService.logServiceError(ex, "Booking", booking.getId(), booking.getCustomer().getId());
+            log.error("Deposit refund failed: bookingId={}, amount={}", booking.getId(), refundAmount, ex);
+        }
+    }
+
+    private void markRefunded(Booking booking, BigDecimal refundAmount) {
+        booking.setDepositStatus(DepositStatus.REFUNDED);
+        booking.setDepositRefundAmount(refundAmount);
+        booking.setDepositRefundedAt(LocalDateTime.now());
+        bookingRepository.save(booking);
+    }
+
+    /**
+     * Auto-refunds any completed booking's deposit that's still HELD (no claim
+     * filed against it) once the grace period has passed — a customer's money
+     * doesn't sit held indefinitely just because no one followed up. Called by
+     * DepositReleaseTask.
+     */
+    @Transactional
+    public void releaseUnclaimedDeposits(int graceHours) {
+        LocalDateTime cutoff = LocalDateTime.now().minusHours(graceHours);
+        List<Booking> eligible = bookingRepository.findAllByStatusAndDepositStatusAndActualReturnDatetimeBefore(
+                BookingStatus.COMPLETED, DepositStatus.HELD, cutoff);
+
+        if (eligible.isEmpty()) {
+            return;
+        }
+        log.info("Auto-releasing {} unclaimed deposit(s)", eligible.size());
+        for (Booking booking : eligible) {
+            refundDeposit(booking, booking.getSecurityDeposit());
+            try {
+                webPushService.sendToUser(booking.getCustomer().getId(), "Deposit resolved",
+                        "Your deposit of ₹" + booking.getSecurityDeposit() + " has been refunded.", "/bookings");
+            } catch (Exception ex) {
+                log.warn("Failed to push deposit-auto-released notification for bookingId={}", booking.getId(), ex);
+            }
+        }
     }
 
     /**

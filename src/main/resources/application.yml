@@ -60,6 +60,10 @@ puduvandi:
   commission:
     default-percentage: 20.0
 
+  deposit:
+    # Hours after a booking completes before its unclaimed security deposit auto-refunds.
+    auto-release-hours: ${DEPOSIT_AUTO_RELEASE_HOURS:0}
+
   storage:
     upload-dir: ./uploads   # local disk path; swap for S3 bucket in production
 
@@ -75,6 +79,13 @@ puduvandi:
     mock-enabled: ${PAYMENT_MOCK_ENABLED:false}
     # Unpaid PAYMENT_PENDING bookings past this age are auto-cancelled and the bike released.
     payment-expiry-minutes: ${PAYMENT_EXPIRY_MINUTES:15}
+
+  push:
+    # Real, generated VAPID keypair — dev-default only, same convention as JWT_SECRET's
+    # dev default. Override via env vars for staging/prod (rotate there, don't reuse this one).
+    vapid-public-key: ${VAPID_PUBLIC_KEY:BKjTGkFD_SyqnXf_IhH2Wwf5WbEbYtEFehXyd5PQVkzAERuCDyBNjxv74_MvF0EENcjDMtB9A9L-0DGTn43vLqE}
+    vapid-private-key: ${VAPID_PRIVATE_KEY:Lar7gckcdrMYnkoEQtrN8q0chiLiW6OcUPexTtpW4cc}
+    subject: ${VAPID_SUBJECT:mailto:support@puduvandi.com}
 
 # ===== Logging =====
 logging:

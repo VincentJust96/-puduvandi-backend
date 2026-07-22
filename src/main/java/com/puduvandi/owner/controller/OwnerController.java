@@ -7,6 +7,9 @@ import com.puduvandi.bike.service.BikeService;
 import com.puduvandi.booking.dto.BookingResponse;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.dto.ApiResponse;
+import com.puduvandi.deposit.dto.DepositClaimResponse;
+import com.puduvandi.deposit.dto.FileDepositClaimRequest;
+import com.puduvandi.deposit.service.DepositClaimService;
 import com.puduvandi.owner.dto.*;
 import com.puduvandi.owner.service.OwnerService;
 import com.puduvandi.security.PuduvandiUserPrincipal;
@@ -35,6 +38,7 @@ public class OwnerController {
     private final OwnerService ownerService;
     private final BikeService bikeService;
     private final BookingService bookingService;
+    private final DepositClaimService depositClaimService;
 
     // ===== PROFILE =====
 
@@ -153,5 +157,16 @@ public class OwnerController {
 
         Page<BookingResponse> bookings = bookingService.getOwnerBookings(principal.getUserId(), page, size);
         return ResponseEntity.ok(ApiResponse.success("Bookings fetched", bookings));
+    }
+
+    @PostMapping("/bookings/{bookingId}/deposit-claim")
+    @Operation(summary = "File a deduction claim against a completed booking's security deposit")
+    public ResponseEntity<ApiResponse<DepositClaimResponse>> fileDepositClaim(
+            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
+            @PathVariable Long bookingId,
+            @Valid @RequestBody FileDepositClaimRequest request) {
+
+        DepositClaimResponse response = depositClaimService.fileClaim(principal.getUserId(), bookingId, request);
+        return ResponseEntity.ok(ApiResponse.success("Deposit claim filed", response));
     }
 }

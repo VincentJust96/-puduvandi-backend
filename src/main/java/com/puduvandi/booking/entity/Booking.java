@@ -5,6 +5,7 @@ import com.puduvandi.bike.entity.Bike;
 import com.puduvandi.common.entity.BaseEntity;
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.DeliveryType;
+import com.puduvandi.common.enums.DepositStatus;
 import com.puduvandi.owner.entity.OwnerProfile;
 import com.puduvandi.payment.entity.Payment;
 import jakarta.persistence.*;
@@ -133,4 +134,16 @@ public class Booking extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "payment_id")
     private Payment payment;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "deposit_status", nullable = false)
+    @Builder.Default
+    private DepositStatus depositStatus = DepositStatus.HELD;
+
+    /** Set once depositStatus reaches REFUNDED — 0 means the deposit was fully forfeited. */
+    @Column(name = "deposit_refund_amount", precision = 10, scale = 2)
+    private BigDecimal depositRefundAmount;
+
+    @Column(name = "deposit_refunded_at")
+    private LocalDateTime depositRefundedAt;
 }

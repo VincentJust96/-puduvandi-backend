@@ -1,5 +1,6 @@
 package com.puduvandi.delivery.repository;
 
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 import com.puduvandi.delivery.entity.DeliveryOrder;
 import jakarta.persistence.LockModeType;
@@ -15,7 +16,7 @@ import java.util.Optional;
 @Repository
 public interface DeliveryOrderRepository extends JpaRepository<DeliveryOrder, Long> {
 
-    Optional<DeliveryOrder> findByBookingId(Long bookingId);
+    Optional<DeliveryOrder> findByBookingIdAndLegType(Long bookingId, DeliveryLegType legType);
 
     List<DeliveryOrder> findByStatusOrderByCreatedAtAsc(DeliveryStatus status);
 

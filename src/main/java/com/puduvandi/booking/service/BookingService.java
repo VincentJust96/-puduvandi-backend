@@ -12,6 +12,7 @@ import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.common.enums.BikeStatus;
 import com.puduvandi.common.enums.BikeVerificationStatus;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.common.enums.DocumentType;
 import com.puduvandi.auth.entity.User;
@@ -21,6 +22,7 @@ import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.notification.service.BookingConfirmationService;
+import com.puduvandi.push.service.WebPushService;
 import com.puduvandi.user.entity.UserDocument;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
@@ -65,6 +67,7 @@ public class BookingService {
     private final BookingConfirmationService bookingConfirmationService;
     private final DeliveryService deliveryService;
     private final UserDocumentRepository userDocumentRepository;
+    private final WebPushService webPushService;
 
     @Value("${puduvandi.commission.default-percentage:20.0}")
     private BigDecimal defaultCommissionPercent;
@@ -244,6 +247,7 @@ public class BookingService {
         // from confirmBookingsAfterPayment(), once payment is verified.
         if (booking.getStatus() == BookingStatus.CONFIRMED) {
             bookingConfirmationService.sendBookingConfirmation(booking);
+            notifyOwnerOfNewBooking(booking);
         }
 
         return toResponse(booking);
@@ -267,6 +271,17 @@ public class BookingService {
             bookingRepository.save(booking);
             log.info("Booking confirmed after payment: bookingId={}", bookingId);
             bookingConfirmationService.sendBookingConfirmation(booking);
+            notifyOwnerOfNewBooking(booking);
+        }
+    }
+
+    private void notifyOwnerOfNewBooking(Booking booking) {
+        try {
+            webPushService.sendToUser(booking.getOwner().getUser().getId(), "New booking received",
+                    booking.getBike().getBrand() + " " + booking.getBike().getModel() + " just got booked.",
+                    "/owner/bookings");
+        } catch (Exception ex) {
+            log.warn("Failed to push new-booking notification for bookingId={}", booking.getId(), ex);
         }
     }
 
@@ -295,7 +310,7 @@ public class BookingService {
         }
 
         if (booking.getDeliveryType() == DeliveryType.PARTNER_DELIVERY) {
-            deliveryService.cancelDeliveryForBooking(bookingId);
+            deliveryService.cancelDeliveryForBooking(bookingId, DeliveryLegType.OUTBOUND);
         }
 
         log.info("Booking expired (payment window elapsed): bookingId={}", bookingId);
@@ -332,6 +347,12 @@ public class BookingService {
 
         booking.setStatus(BookingStatus.RETURN_REQUESTED);
         bookingRepository.save(booking);
+
+        // Opens the return leg as its own claimable job — any available partner (not
+        // necessarily whoever did the outbound delivery) can pick it up and earn its own fee.
+        if (booking.getDeliveryType() == DeliveryType.PARTNER_DELIVERY) {
+            deliveryService.createReturnDeliveryOrder(booking);
+        }
 
         log.info("Return requested: bookingId={}", bookingId);
         return toResponse(booking);
@@ -389,7 +410,7 @@ public class BookingService {
         }
 
         if (booking.getDeliveryType() == DeliveryType.PARTNER_DELIVERY) {
-            deliveryService.cancelDeliveryForBooking(bookingId);
+            deliveryService.cancelDeliveryForBooking(bookingId, DeliveryLegType.OUTBOUND);
         }
 
         log.info("Booking cancelled: bookingId={}, reason={}", bookingId, request.reason());
@@ -565,7 +586,9 @@ public class BookingService {
                 dayMode ? "DAY" : "HOUR",
                 quantity,
                 b.getDeliveryType(),
-                customerLicenceUrl(b.getCustomer().getId())
+                customerLicenceUrl(b.getCustomer().getId()),
+                b.getDepositStatus(),
+                b.getDepositRefundAmount()
         );
     }
 
