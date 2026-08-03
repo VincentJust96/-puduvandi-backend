@@ -90,15 +90,18 @@ public class AdminService {
 
     /**
      * PUDUVANDI_ENV values allowed to run the destructive local data reset.
-     * Deliberately requires an EXPLICIT "local" — an unset/blank env var is
-     * fail-closed (disallowed), not treated as implicitly local. Every
-     * deployed environment for this project (including local dev, per
-     * project convention) sets PUDUVANDI_ENV explicitly, so there is no
-     * legitimate workflow that depends on the blank case — leaving it open
-     * would only mean a deployment that forgets to set the var gets this
-     * destructive endpoint enabled by accident.
+     * "staging" is included alongside "local" so the deployed staging
+     * instance can be wiped between test rounds without needing a local
+     * backend — "production" is deliberately never in this set. An
+     * unset/blank env var is still fail-closed (disallowed), not treated as
+     * implicitly local. Every deployed environment for this project
+     * (including local dev, per project convention) sets PUDUVANDI_ENV
+     * explicitly, so there is no legitimate workflow that depends on the
+     * blank case — leaving it open would only mean a deployment that
+     * forgets to set the var gets this destructive endpoint enabled by
+     * accident.
      */
-    private static final Set<String> RESET_ALLOWED_ENVS = Set.of("local");
+    private static final Set<String> RESET_ALLOWED_ENVS = Set.of("local", "staging");
     private static final String RESET_CONFIRMATION_PHRASE = "RESET_ALL_DATA";
 
     /**
@@ -1023,7 +1026,7 @@ public class AdminService {
     /**
      * Wipes every owner, customer, partner, bike, booking and related row,
      * leaving only ADMIN/SUPER_ADMIN users behind. Refuses to run unless PUDUVANDI_ENV is
-     * exactly "local" (never unset, staging, or production) — and requires the caller
+     * "local" or "staging" (never unset or production) — and requires the caller
      * to echo back {@value #RESET_CONFIRMATION_PHRASE} to guard against an
      * accidental click/replay.
      */

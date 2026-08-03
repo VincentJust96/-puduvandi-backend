@@ -96,20 +96,29 @@ class AdminServiceResetLocalDataTest {
     }
 
     @Test
-    @DisplayName("staging/production PUDUVANDI_ENV is disallowed")
-    void resetLocalData_stagingEnv_isBlocked() {
-        setEnv("staging");
+    @DisplayName("production PUDUVANDI_ENV is disallowed")
+    void resetLocalData_productionEnv_isBlocked() {
+        setEnv("production");
 
         assertThatThrownBy(() -> adminService.resetLocalData(CONFIRMATION_PHRASE))
                 .isInstanceOf(ForbiddenException.class)
                 .hasMessageContaining("disabled outside local");
 
         verifyNoInteractions(jdbcTemplate);
+    }
 
-        setEnv("production");
-        assertThatThrownBy(() -> adminService.resetLocalData(CONFIRMATION_PHRASE))
-                .isInstanceOf(ForbiddenException.class);
-        verifyNoInteractions(jdbcTemplate);
+    @Test
+    @DisplayName("staging env + correct phrase: allowed, truncates and deletes non-admin users")
+    void resetLocalData_stagingEnv_isAllowed() {
+        setEnv("staging");
+        when(jdbcTemplate.update(anyString())).thenReturn(3);
+
+        AdminDataResetResponse response = adminService.resetLocalData(CONFIRMATION_PHRASE);
+
+        assertThat(response.nonAdminUsersRemoved()).isEqualTo(3);
+        assertThat(response.environment()).isEqualTo("staging");
+        verify(jdbcTemplate).execute(anyString());
+        verify(jdbcTemplate).update(contains("DELETE FROM users WHERE role NOT IN ('ADMIN', 'SUPER_ADMIN')"));
     }
 
     @Test

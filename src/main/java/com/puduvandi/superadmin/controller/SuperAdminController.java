@@ -218,7 +218,7 @@ public class SuperAdminController {
 
     @PostMapping("/reset-local-data")
     @Operation(summary = "DANGER: wipe all owners/customers/partners/bikes/bookings, keep only ADMIN/SUPER_ADMIN users. " +
-            "Blocked unless PUDUVANDI_ENV is exactly \"local\" — never unset, staging, or production.")
+            "Blocked unless PUDUVANDI_ENV is \"local\" or \"staging\" — never unset or production.")
     public ResponseEntity<ApiResponse<AdminDataResetResponse>> resetLocalData(@Valid @RequestBody ResetLocalDataRequest request) {
         AdminDataResetResponse response = adminService.resetLocalData(request.confirmationPhrase());
         return ResponseEntity.ok(ApiResponse.success("Local data reset complete", response));
