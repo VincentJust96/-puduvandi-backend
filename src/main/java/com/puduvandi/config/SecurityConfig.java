@@ -10,6 +10,7 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -46,6 +47,15 @@ public class SecurityConfig {
 
             .csrf(AbstractHttpConfigurer::disable)
 
+            // Spring Security's default X-Frame-Options: DENY blocks the file-serving
+            // endpoint from ever being embedded — including by our own frontend's inline
+            // PDF preview (<iframe src=".../files/{id}">), which fails silently with no
+            // visible error beyond the browser console. Safe to disable outright: this is
+            // a pure REST API with no server-rendered HTML pages of its own to clickjack,
+            // and /api/v1/files/** access is already gated by ownership checks at the
+            // controller layer (see FileController.enforceDocumentAccess), not by headers.
+            .headers(headers -> headers.frameOptions(HeadersConfigurer.FrameOptionsConfig::disable))
+
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
@@ -59,6 +69,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/v1/bikes/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/files/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/push/vapid-public-key").permitAll()
+                // Razorpay calls this server-to-server with no bearer token — authenticity is
+                // verified inside RazorpayWebhookController via X-Razorpay-Signature instead.
+                .requestMatchers(HttpMethod.POST, "/api/v1/webhooks/razorpay").permitAll()
                 .requestMatchers("/api/v1/super-admin/**").hasRole("SUPER_ADMIN")
                 .requestMatchers("/api/v1/admin/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
                 .requestMatchers("/api/v1/owner/**").hasRole("OWNER")

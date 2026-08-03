@@ -16,6 +16,7 @@ import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.handover.dto.HandoverOtpResponse;
 import com.puduvandi.handover.dto.HandoverVerifyResponse;
 import com.puduvandi.handover.entity.HandoverOtp;
+import com.puduvandi.handover.repository.BikeConditionReviewRepository;
 import com.puduvandi.handover.repository.HandoverOtpRepository;
 import com.puduvandi.handover.service.HandoverOtpService;
 import com.puduvandi.owner.entity.OwnerProfile;
@@ -45,6 +46,7 @@ class HandoverOtpServiceTest {
     @Mock private DeliveryOrderRepository deliveryOrderRepository;
     @Mock private BookingService bookingService;
     @Mock private DeliveryService deliveryService;
+    @Mock private BikeConditionReviewRepository conditionReviewRepository;
 
     private HandoverOtpService handoverOtpService;
 
@@ -62,7 +64,13 @@ class HandoverOtpServiceTest {
     @BeforeEach
     void setUp() {
         handoverOtpService = new HandoverOtpService(
-                handoverOtpRepository, bookingRepository, deliveryOrderRepository, bookingService, deliveryService);
+                handoverOtpRepository, bookingRepository, deliveryOrderRepository, bookingService, deliveryService,
+                conditionReviewRepository);
+
+        // PICKUP_SELF/RECEIVE_PARTNER generate() gates on a filed condition review — default
+        // to "already filed" so existing tests exercise the behavior they were written for,
+        // not this newer gate. lenient() since not every test path reaches this check.
+        lenient().when(conditionReviewRepository.existsByBookingId(BOOKING_ID)).thenReturn(true);
 
         customer = User.builder().id(CUSTOMER_ID).phoneNumber("9000000001").build();
         ownerUser = User.builder().id(OWNER_USER_ID).phoneNumber("9000000002").build();
@@ -230,7 +238,7 @@ class HandoverOtpServiceTest {
                 .expiresAt(LocalDateTime.now().plusMinutes(5)).used(false).failedAttempts(0).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(handoverOtpRepository.findLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
+        when(handoverOtpRepository.lockLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
                 .thenReturn(Optional.of(otp));
 
         HandoverVerifyResponse response = handoverOtpService.verify(
@@ -252,7 +260,7 @@ class HandoverOtpServiceTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("not authorised");
 
-        verify(handoverOtpRepository, never()).findLatestActive(any(), any(), any());
+        verify(handoverOtpRepository, never()).lockLatestActive(any(), any(), any());
         verify(bookingService, never()).transitionToRideStarted(anyLong());
     }
 
@@ -260,7 +268,7 @@ class HandoverOtpServiceTest {
     @DisplayName("verify: no active OTP (never generated or expired) is rejected")
     void verify_noActiveOtp_shouldThrow() {
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(handoverOtpRepository.findLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
+        when(handoverOtpRepository.lockLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> handoverOtpService.verify(BOOKING_ID, HandoverPurpose.PICKUP_SELF, "482913", OWNER_USER_ID))
@@ -278,7 +286,7 @@ class HandoverOtpServiceTest {
                 .expiresAt(LocalDateTime.now().plusMinutes(5)).used(false).failedAttempts(0).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(handoverOtpRepository.findLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
+        when(handoverOtpRepository.lockLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
                 .thenReturn(Optional.of(otp));
 
         assertThatThrownBy(() -> handoverOtpService.verify(BOOKING_ID, HandoverPurpose.PICKUP_SELF, "000000", OWNER_USER_ID))
@@ -298,7 +306,7 @@ class HandoverOtpServiceTest {
                 .expiresAt(LocalDateTime.now().plusMinutes(5)).used(false).failedAttempts(4).build();
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
-        when(handoverOtpRepository.findLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
+        when(handoverOtpRepository.lockLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.PICKUP_SELF), any()))
                 .thenReturn(Optional.of(otp));
 
         assertThatThrownBy(() -> handoverOtpService.verify(BOOKING_ID, HandoverPurpose.PICKUP_SELF, "000000", OWNER_USER_ID))
@@ -321,7 +329,7 @@ class HandoverOtpServiceTest {
 
         when(bookingRepository.findByIdAndDeletedFalse(BOOKING_ID)).thenReturn(Optional.of(booking));
         when(deliveryOrderRepository.findByBookingIdAndLegType(BOOKING_ID, DeliveryLegType.RETURN)).thenReturn(Optional.of(order));
-        when(handoverOtpRepository.findLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.RETURN_FINAL), any()))
+        when(handoverOtpRepository.lockLatestActive(eq(BOOKING_ID), eq(HandoverPurpose.RETURN_FINAL), any()))
                 .thenReturn(Optional.of(otp));
 
         HandoverVerifyResponse response = handoverOtpService.verify(

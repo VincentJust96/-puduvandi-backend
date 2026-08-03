@@ -1,6 +1,7 @@
 package com.puduvandi.notification.entity;
 
 import com.puduvandi.common.entity.BaseEntity;
+import com.puduvandi.common.enums.NotificationPurpose;
 import com.puduvandi.common.enums.NotificationStatus;
 import com.puduvandi.common.enums.NotificationType;
 import jakarta.persistence.*;
@@ -38,6 +39,11 @@ public class NotificationLog extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "notification_type", nullable = false, length = 20)
     private NotificationType notificationType;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "purpose", nullable = false, length = 30)
+    @Builder.Default
+    private NotificationPurpose purpose = NotificationPurpose.ADHOC;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)

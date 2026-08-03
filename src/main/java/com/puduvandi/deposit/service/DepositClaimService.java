@@ -14,14 +14,19 @@ import com.puduvandi.deposit.entity.DepositClaim;
 import com.puduvandi.deposit.repository.DepositClaimRepository;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ResourceNotFoundException;
+import com.puduvandi.audit.service.AdminAuditService;
 import com.puduvandi.payment.service.PaymentService;
 import com.puduvandi.push.service.WebPushService;
+import com.puduvandi.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -46,10 +51,26 @@ public class DepositClaimService {
     private final UserRepository userRepository;
     private final PaymentService paymentService;
     private final WebPushService webPushService;
+    private final RealtimeEventPublisher realtimeEventPublisher;
+    private final AdminAuditService adminAuditService;
+
+    // Self-reference (lazily resolved to the Spring proxy) so instantRefund()'s call to
+    // claimForInstantRefund() actually goes through a REAL separate transaction rather than a
+    // plain self-invocation — required for its own propagation to take effect. See
+    // claimForInstantRefund's javadoc for why this split exists, and PaymentService.self for the
+    // same pattern.
+    @Autowired
+    @Lazy
+    private DepositClaimService self;
 
     @Transactional
     public DepositClaimResponse fileClaim(Long ownerUserId, Long bookingId, FileDepositClaimRequest request) {
-        Booking booking = bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(bookingId, ownerUserId)
+        bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(bookingId, ownerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
+
+        // Lock the booking row so two concurrent claim-filing requests for the
+        // same booking can't both pass the depositStatus==HELD check below.
+        Booking booking = bookingRepository.lockById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
 
         if (booking.getStatus() != BookingStatus.COMPLETED) {
@@ -80,7 +101,68 @@ public class DepositClaimService {
 
         log.info("Deposit claim filed: claimId={}, bookingId={}, ownerUserId={}, deductionAmount={}",
                 claim.getId(), bookingId, ownerUserId, request.deductionAmount());
+        publishDepositClaimUpdate(booking);
         return toResponse(claim);
+    }
+
+    /**
+     * Owner-triggered instant full refund — skips the claim/admin-review path
+     * entirely for bookings where the owner has nothing to dispute. Only
+     * available while the deposit is still HELD (same guard as fileClaim).
+     * <p>
+     * Deliberately NOT itself @Transactional — see claimForInstantRefund's javadoc for why the
+     * locking step has to commit (and release its row lock) before paymentService.refundDeposit()
+     * runs, rather than both sharing one transaction here.
+     */
+    public void instantRefund(Long ownerUserId, Long bookingId) {
+        Booking booking = self.claimForInstantRefund(ownerUserId, bookingId);
+
+        paymentService.refundDeposit(booking, booking.getSecurityDeposit());
+        notifyDepositResolved(booking);
+
+        log.info("Instant full deposit refund: bookingId={}, ownerUserId={}", bookingId, ownerUserId);
+        publishDepositClaimUpdate(booking);
+    }
+
+    /**
+     * Validates and "claims" a booking for instantRefund() by flipping it straight to
+     * REFUND_INITIATED — in its own short transaction, separate from the actual refund call.
+     * <p>
+     * Why: this takes a pessimistic lock on the SAME booking row that
+     * paymentService.refundDeposit() (REQUIRES_NEW — a different DB connection) then needs to
+     * UPDATE. If both ran in one transaction, that connection would still be holding this lock
+     * when refundDeposit's separate connection tried to write the row — a self-inflicted wait
+     * that (confirmed live) always hits the DB's lock_timeout and fails, because the original
+     * connection can't release the lock until instantRefund() returns, which can't happen until
+     * refundDeposit() (blocked on that very lock) returns. Committing here first releases the
+     * lock before refundDeposit() ever touches the row, so there's nothing left to contend with.
+     * <p>
+     * Flipping straight to REFUND_INITIATED (rather than just validating and leaving it HELD)
+     * is what keeps this safe under concurrency: a second simultaneous instantRefund() call's own
+     * claimForInstantRefund() will see depositStatus != HELD once it acquires the lock, and reject
+     * — the same protection the old single-transaction version got from never releasing the lock
+     * at all, just achieved by state instead of by holding the lock across the whole operation.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Booking claimForInstantRefund(Long ownerUserId, Long bookingId) {
+        bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(bookingId, ownerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
+
+        // Lock the booking row so this can't race a concurrent claim-filing
+        // request for the same booking (same reasoning as fileClaim above).
+        Booking booking = bookingRepository.lockById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
+
+        if (booking.getStatus() != BookingStatus.COMPLETED) {
+            throw new BusinessException("A deposit can only be refunded after the booking is completed.");
+        }
+        if (booking.getDepositStatus() != DepositStatus.HELD) {
+            throw new BusinessException("This booking's deposit is not eligible for an instant refund (status: "
+                    + booking.getDepositStatus() + ").");
+        }
+
+        booking.setDepositStatus(DepositStatus.REFUND_INITIATED);
+        return bookingRepository.save(booking);
     }
 
     @Transactional(readOnly = true)
@@ -103,6 +185,10 @@ public class DepositClaimService {
         DepositClaim saved = depositClaimRepository.save(claim);
 
         log.info("Deposit claim approved: claimId={}, bookingId={}, adminUserId={}", claimId, booking.getId(), adminUserId);
+        adminAuditService.recordCurrentActor("APPROVE_DEPOSIT_CLAIM", "DepositClaim", String.valueOf(claimId),
+                java.util.Map.of("status", "PENDING"),
+                java.util.Map.of("status", "APPROVED", "deductionAmount", claim.getDeductionAmount()));
+        publishDepositClaimUpdate(booking);
         return toResponse(saved);
     }
 
@@ -123,6 +209,10 @@ public class DepositClaimService {
 
         log.info("Deposit claim rejected: claimId={}, bookingId={}, adminUserId={}, reason={}",
                 claimId, booking.getId(), adminUserId, reason);
+        adminAuditService.recordCurrentActor("REJECT_DEPOSIT_CLAIM", "DepositClaim", String.valueOf(claimId),
+                java.util.Map.of("status", "PENDING"),
+                java.util.Map.of("status", "REJECTED", "reason", reason));
+        publishDepositClaimUpdate(booking);
         return toResponse(saved);
     }
 
@@ -150,7 +240,28 @@ public class DepositClaimService {
         paymentService.refundDeposit(booking, amount);
     }
 
+    /**
+     * Only pushes once the deposit is definitively REFUNDED — for a real Razorpay refund,
+     * refundDeposit() leaves the booking at REFUND_INITIATED and PaymentService itself pushes
+     * this same notification later, once handleRefundWebhookEvent() confirms settlement (see
+     * PaymentService.pushDepositResolvedNotification). Nothing to tell the customer yet for
+     * REFUND_INITIATED, and REFUND_FAILED is an admin-facing problem (retryFailedRefund), not
+     * a customer-facing "resolved" event.
+     */
+    private void publishDepositClaimUpdate(Booking booking) {
+        try {
+            realtimeEventPublisher.depositClaimUpdated(booking.getId(),
+                    booking.getCustomer().getId(), booking.getOwner().getUser().getId(),
+                    booking.getDepositStatus().name());
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime deposit-claim update for bookingId={}", booking.getId(), ex);
+        }
+    }
+
     private void notifyDepositResolved(Booking booking) {
+        if (booking.getDepositStatus() != DepositStatus.REFUNDED) {
+            return;
+        }
         try {
             BigDecimal refunded = booking.getDepositRefundAmount();
             String body = refunded == null
@@ -173,7 +284,10 @@ public class DepositClaimService {
     }
 
     private DepositClaim findPendingClaim(Long claimId) {
-        DepositClaim claim = depositClaimRepository.findById(claimId)
+        // Locked so two concurrent approve/reject calls (double-click, retried
+        // request) on the same claim can't both pass the PENDING check and
+        // both trigger a refund.
+        DepositClaim claim = depositClaimRepository.lockById(claimId)
                 .orElseThrow(() -> new ResourceNotFoundException("DepositClaim", claimId));
         if (claim.getStatus() != DocumentStatus.PENDING) {
             throw new BusinessException("This claim has already been decided (status: " + claim.getStatus() + ").");

@@ -47,6 +47,7 @@ class AuthServiceTest {
     @Mock private OtpProperties otpProperties;
     @Mock private com.puduvandi.notification.service.NotificationService notificationService;
     @Mock private RefreshTokenSecurityService refreshTokenSecurityService;
+    @Mock private com.puduvandi.realtime.RealtimeEventPublisher realtimeEventPublisher;
 
     @InjectMocks
     private AuthService authService;

@@ -1,5 +1,7 @@
 package com.puduvandi.errorlog.controller;
 
+import com.puduvandi.auth.entity.User;
+import com.puduvandi.auth.repository.UserRepository;
 import com.puduvandi.common.dto.ApiResponse;
 import com.puduvandi.errorlog.dto.ErrorLogResponse;
 import com.puduvandi.errorlog.entity.ErrorLog;
@@ -16,6 +18,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
 @RestController
 @RequestMapping("/api/v1/admin/error-logs")
 @RequiredArgsConstructor
@@ -25,6 +33,7 @@ import org.springframework.web.bind.annotation.*;
 public class ErrorLogController {
 
     private final ErrorLogRepository errorLogRepository;
+    private final UserRepository userRepository;
 
     @GetMapping
     @Operation(summary = "List error logs (newest first), filter by severity or entity")
@@ -49,7 +58,9 @@ public class ErrorLogController {
             results = errorLogRepository.findAllOrderByCreatedAtDesc(pageable);
         }
 
-        return ResponseEntity.ok(ApiResponse.success("Error logs fetched", results.map(this::toResponse)));
+        Map<Long, User> usersById = fetchUsersFor(results.getContent());
+        return ResponseEntity.ok(ApiResponse.success("Error logs fetched",
+                results.map(e -> toResponse(e, usersById.get(e.getUserId())))));
     }
 
     @GetMapping("/{id}")
@@ -57,14 +68,32 @@ public class ErrorLogController {
     public ResponseEntity<ApiResponse<ErrorLogResponse>> getById(@PathVariable Long id) {
         ErrorLog log = errorLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("ErrorLog", id));
-        return ResponseEntity.ok(ApiResponse.success("Error log fetched", toResponse(log)));
+        User user = log.getUserId() == null ? null : userRepository.findById(log.getUserId()).orElse(null);
+        return ResponseEntity.ok(ApiResponse.success("Error log fetched", toResponse(log, user)));
     }
 
-    private ErrorLogResponse toResponse(ErrorLog e) {
+    private Map<Long, User> fetchUsersFor(List<ErrorLog> logs) {
+        List<Long> userIds = logs.stream()
+                .map(ErrorLog::getUserId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        return userRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity()));
+    }
+
+    private ErrorLogResponse toResponse(ErrorLog e, User user) {
         return new ErrorLogResponse(
                 e.getId(), e.getSeverity(), e.getErrorCode(),
                 e.getErrorMessage(), e.getSource(),
                 e.getEntityType(), e.getEntityId(), e.getUserId(),
+                user == null ? null : user.getFullName(),
+                user == null ? null : user.getPhoneNumber(),
+                user == null ? null : user.getEmail(),
+                user == null || user.getRole() == null ? null : user.getRole().name(),
                 e.getRequestPath(), e.getRequestMethod(),
                 e.getContext(), e.getStackTrace(), e.getCreatedAt()
         );

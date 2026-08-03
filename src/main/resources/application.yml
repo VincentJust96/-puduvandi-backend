@@ -27,6 +27,16 @@ spring:
       connection-timeout: 20000
       idle-timeout: 300000
       max-lifetime: 1200000
+      # Applied to every physical connection Hikari opens. Without these, Postgres
+      # will wait FOREVER for a row lock held by another session (a stuck/paused
+      # transaction — debugger breakpoint, a bug, a hung downstream call — anything)
+      # and will let a transaction sit "idle in transaction" indefinitely, wedging
+      # that row for every other request until someone notices and manually kills
+      # the backend PID. These bound both: lock_timeout fails a blocked request fast
+      # (clear error to the caller) instead of hanging its HTTP thread forever;
+      # idle_in_transaction_session_timeout self-heals a stalled transaction by
+      # killing it outright, releasing whatever it was holding.
+      connection-init-sql: "SET lock_timeout = '10s'; SET idle_in_transaction_session_timeout = '30s'; SET statement_timeout = '30s';"
 
   jpa:
     hibernate:
@@ -67,6 +77,21 @@ puduvandi:
   storage:
     upload-dir: ./uploads   # local disk path; swap for S3 bucket in production
 
+  security:
+    # Comma-separated IPs/CIDRs of reverse proxies/load balancers actually in front of this
+    # app (e.g. Render's edge). X-Forwarded-For is only trusted for rate-limiting when the
+    # DIRECT connection (request.getRemoteAddr()) comes from one of these — otherwise it's
+    # attacker-controlled and trusting it lets anyone spoof a fresh IP per request to bypass
+    # the per-IP rate-limit cap. Empty (default) = never trust X-Forwarded-For.
+    trusted-proxies: ${TRUSTED_PROXIES:}
+
+  encryption:
+    # Base64-encoded 32-byte AES-256 key for EncryptedStringConverter (currently only
+    # Bike.insuranceDocumentPassword). No committed real default — same rule as
+    # razorpay.key-secret/vapid-private-key. Generate with:
+    #   openssl rand -base64 32
+    key: ${ENCRYPTION_KEY:}
+
   support-phone: "+91-8946095151"
 
   razorpay:
@@ -76,15 +101,32 @@ puduvandi:
     key-secret: ${RAZORPAY_KEY_SECRET:k177pNbdsPzoQCHu4MXfM2ho}
     # true = booking creation auto-confirms instantly, no real gateway call (local/dev default).
     # false = booking sits PAYMENT_PENDING until a real Razorpay payment is verified.
-    mock-enabled: ${PAYMENT_MOCK_ENABLED:false}
+    mock-enabled: ${PAYMENT_MOCK_ENABLED:true}
     # Unpaid PAYMENT_PENDING bookings past this age are auto-cancelled and the bike released.
     payment-expiry-minutes: ${PAYMENT_EXPIRY_MINUTES:15}
+    # Set in the Razorpay dashboard's Webhooks page when registering the webhook URL —
+    # distinct from key-secret. Used to verify X-Razorpay-Signature on incoming webhook calls.
+    webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:}
+
+  msg91:
+    # Blank authkey = not configured yet, NotificationService falls back to its
+    # no-provider stub. See automation/n8n/MSG91_SETUP.md for signup/DLT steps.
+    authkey: ${MSG91_AUTHKEY:}
+    sender-id: ${MSG91_SENDER_ID:}
+    route: "4"
+    country: "91"
+    api-url: https://control.msg91.com/api/v5/sms
+    booking-confirmation-template-id: ${MSG91_TEMPLATE_BOOKING_CONFIRMATION:}
+    pickup-reminder-template-id: ${MSG91_TEMPLATE_PICKUP_REMINDER:}
+    ride-completion-template-id: ${MSG91_TEMPLATE_RIDE_COMPLETION:}
+    otp-template-id: ${MSG91_TEMPLATE_OTP:}
 
   push:
-    # Real, generated VAPID keypair — dev-default only, same convention as JWT_SECRET's
-    # dev default. Override via env vars for staging/prod (rotate there, don't reuse this one).
+    # Public key is safe to expose (served by GET /api/v1/push/vapid-public-key); keep a real
+    # dev default for local convenience. Private key must never have a real default here —
+    # same rule as razorpay.key-secret above.
     vapid-public-key: ${VAPID_PUBLIC_KEY:BKjTGkFD_SyqnXf_IhH2Wwf5WbEbYtEFehXyd5PQVkzAERuCDyBNjxv74_MvF0EENcjDMtB9A9L-0DGTn43vLqE}
-    vapid-private-key: ${VAPID_PRIVATE_KEY:Lar7gckcdrMYnkoEQtrN8q0chiLiW6OcUPexTtpW4cc}
+    vapid-private-key: ${VAPID_PRIVATE_KEY:}
     subject: ${VAPID_SUBJECT:mailto:support@puduvandi.com}
 
 # ===== Logging =====

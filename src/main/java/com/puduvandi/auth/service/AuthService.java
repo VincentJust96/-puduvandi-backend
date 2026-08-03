@@ -8,6 +8,7 @@ import com.puduvandi.auth.repository.OtpRecordRepository;
 import com.puduvandi.auth.repository.RefreshTokenRepository;
 import com.puduvandi.auth.repository.UserRepository;
 import com.puduvandi.common.enums.KycStatus;
+import com.puduvandi.common.enums.NotificationPurpose;
 import com.puduvandi.common.enums.UserRole;
 import com.puduvandi.common.enums.UserStatus;
 import com.puduvandi.config.JwtProperties;
@@ -17,6 +18,7 @@ import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.exception.UnauthorizedException;
 import com.puduvandi.exception.ConflictException;
 import com.puduvandi.notification.service.NotificationService;
+import com.puduvandi.realtime.RealtimeEventPublisher;
 import com.puduvandi.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -42,8 +44,20 @@ public class AuthService {
     private final NotificationService notificationService;
     private final RefreshTokenSecurityService refreshTokenSecurityService;
     private final PasswordEncoder passwordEncoder;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
+    private void publishNewUserAlert(User user) {
+        try {
+            realtimeEventPublisher.adminAlert("user", java.util.Map.of(
+                    "userId", user.getId(),
+                    "phoneNumber", user.getPhoneNumber() != null ? user.getPhoneNumber() : "",
+                    "email", user.getEmail() != null ? user.getEmail() : ""));
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime new-user alert for userId={}", user.getId(), ex);
+        }
+    }
 
     /**
      * Generates and sends an OTP to the given phone number.
@@ -74,7 +88,8 @@ public class AuthService {
         } else {
             notificationService.sendSMS(null, request.phoneNumber(),
                     "Your Puduvandi login OTP is " + otpCode + ". Valid for "
-                            + otpProperties.getExpiryMinutes() + " minutes. Do not share this with anyone.");
+                            + otpProperties.getExpiryMinutes() + " minutes. Do not share this with anyone.",
+                    NotificationPurpose.OTP);
             log.info("OTP SMS queued for {}", request.phoneNumber());
         }
     }
@@ -120,6 +135,7 @@ public class AuthService {
                             .deleted(false)
                             .build());
                     log.info("New user registered: phone={}", request.phoneNumber());
+                    publishNewUserAlert(created);
                     return created;
                 });
 
@@ -235,25 +251,43 @@ public class AuthService {
      * Creates a new account with email + password. Mirrors sendOtp+verifyOtp's
      * "new user" shape: role is left null so the frontend routes straight to
      * the same role-selection screen (/auth/set-role) used by the phone flow.
+     * <p>
+     * Also mirrors verifyOtp's reactivate-instead-of-block behavior: the
+     * email unique index isn't soft-delete aware, so a soft-deleted account
+     * must be reactivated here rather than permanently locking the address
+     * out — see [[project-softdelete-unique-constraint]].
      */
     @Transactional
     public AuthTokenResponse emailSignup(EmailSignupRequest request) {
         String email = request.email().trim().toLowerCase();
 
-        if (userRepository.existsByEmailIgnoreCase(email)) {
-            throw new ConflictException("An account with this email already exists.");
-        }
-
-        User user = User.builder()
-                .email(email)
-                .passwordHash(passwordEncoder.encode(request.password()))
-                .role(null)
-                .status(UserStatus.ACTIVE)
-                .kycStatus(KycStatus.NOT_SUBMITTED)
-                .deleted(false)
-                .build();
-        userRepository.save(user);
-        log.info("New user registered via email: email={}", email);
+        User user = userRepository.findByEmailIgnoreCase(email)
+                .map(existing -> {
+                    if (!existing.isDeleted()) {
+                        throw new ConflictException("An account with this email already exists.");
+                    }
+                    existing.setDeleted(false);
+                    existing.setPasswordHash(passwordEncoder.encode(request.password()));
+                    existing.setRole(null);
+                    existing.setStatus(UserStatus.ACTIVE);
+                    existing.setKycStatus(KycStatus.NOT_SUBMITTED);
+                    log.info("Soft-deleted account reactivated via email signup: email={}", email);
+                    return userRepository.save(existing);
+                })
+                .orElseGet(() -> {
+                    User created = User.builder()
+                            .email(email)
+                            .passwordHash(passwordEncoder.encode(request.password()))
+                            .role(null)
+                            .status(UserStatus.ACTIVE)
+                            .kycStatus(KycStatus.NOT_SUBMITTED)
+                            .deleted(false)
+                            .build();
+                    log.info("New user registered via email: email={}", email);
+                    User savedUser = userRepository.save(created);
+                    publishNewUserAlert(savedUser);
+                    return savedUser;
+                });
 
         String accessToken  = jwtUtil.generateAccessToken(user.getId(), email, "NEW_USER");
         String refreshToken = createAndSaveRefreshToken(user);

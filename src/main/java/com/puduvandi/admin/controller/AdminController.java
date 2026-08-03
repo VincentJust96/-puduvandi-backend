@@ -278,4 +278,22 @@ public class AdminController {
         depositClaimService.retryFailedRefund(bookingId);
         return ResponseEntity.ok(ApiResponse.success("Refund retried — check the booking's deposit status for the outcome"));
     }
+
+    // ===== REVIEW MODERATION =====
+
+    @GetMapping("/reviews")
+    @Operation(summary = "List all customer reviews for moderation (paginated, newest first)")
+    public ResponseEntity<ApiResponse<Page<AdminReviewResponse>>> listReviews(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        return ResponseEntity.ok(ApiResponse.success("Reviews fetched", adminService.listReviews(page, size)));
+    }
+
+    @DeleteMapping("/reviews/{reviewId}")
+    @Operation(summary = "Remove an abusive/fake review")
+    public ResponseEntity<ApiResponse<Void>> deleteReview(@PathVariable Long reviewId) {
+        adminService.deleteReview(reviewId);
+        return ResponseEntity.ok(ApiResponse.success("Review removed"));
+    }
 }

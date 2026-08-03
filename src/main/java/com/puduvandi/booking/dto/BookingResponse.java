@@ -5,6 +5,7 @@ import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.common.enums.DepositStatus;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 public record BookingResponse(
@@ -46,5 +47,18 @@ public record BookingResponse(
     String customerLicenceUrl,
     DepositStatus depositStatus,
     /** Set once depositStatus reaches REFUNDED — 0 means the deposit was fully forfeited. */
-    BigDecimal depositRefundAmount
+    BigDecimal depositRefundAmount,
+    /** True once the customer has rated this (COMPLETED) trip — always false otherwise. */
+    boolean reviewed,
+    /**
+     * The booked bike's own RC/insurance documents — mirrors BikeResponse's fields so a
+     * customer can re-check them from their booking without navigating back to the bike
+     * listing. Never includes the insurance PDF's password (admin/super-admin only, see
+     * BikeResponse); view it via GET /bikes/{bikeId}/insurance-document instead, which
+     * decrypts server-side.
+     */
+    String rcDocumentUrl,
+    String insuranceDocumentUrl,
+    String insurancePolicyNumber,
+    LocalDate insuranceExpiryDate
 ) {}

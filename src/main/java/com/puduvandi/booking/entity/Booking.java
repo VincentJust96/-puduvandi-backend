@@ -146,4 +146,14 @@ public class Booking extends BaseEntity {
 
     @Column(name = "deposit_refunded_at")
     private LocalDateTime depositRefundedAt;
+
+    /**
+     * Razorpay refund id for the currently in-flight or most recently completed
+     * real deposit refund. Set when depositStatus moves to REFUND_INITIATED —
+     * used to match an incoming refund.processed/refund.failed webhook event
+     * back to this booking (a single Payment can cover multiple bookings, so
+     * the refund id, not the payment id, is the unambiguous key).
+     */
+    @Column(name = "deposit_razorpay_refund_id", length = 100)
+    private String depositRazorpayRefundId;
 }

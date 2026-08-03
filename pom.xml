@@ -25,6 +25,7 @@
         <bucket4j.version>8.10.1</bucket4j.version>
         <razorpay.version>1.4.8</razorpay.version>
         <webpush.version>5.1.1</webpush.version>
+        <pdfbox.version>3.0.3</pdfbox.version>
     </properties>
 
     <dependencies>
@@ -130,6 +131,13 @@
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcprov-jdk18on</artifactId>
             <version>1.78.1</version>
+        </dependency>
+
+        <!-- ===== PDFBox — text extraction for insurance-document auto-fill ===== -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>${pdfbox.version}</version>
         </dependency>
 
         <!-- ===== Testing ===== -->

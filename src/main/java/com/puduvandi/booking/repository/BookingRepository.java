@@ -3,9 +3,11 @@ package com.puduvandi.booking.repository;
 import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.DepositStatus;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -21,6 +23,8 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     Optional<Booking> findByIdAndDeletedFalse(Long id);
 
     Optional<Booking> findByIdAndOwner_UserIdAndDeletedFalse(Long id, Long ownerUserId);
+
+    Optional<Booking> findByIdAndCustomerIdAndDeletedFalse(Long id, Long customerId);
 
     Optional<Booking> findByBookingReferenceAndDeletedFalse(String bookingReference);
 
@@ -41,6 +45,20 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
            "WHERE b.owner.user.id = :userId AND b.status = :status AND b.deleted = false")
     BigDecimal sumOwnerEarningsByUserIdAndStatus(@Param("userId") Long userId,
                                                  @Param("status") BookingStatus status);
+
+    /** Gross rent (before commission) — pairs with sumOwnerEarningsByUserIdAndStatus (net) and
+     *  sumCommissionByUserIdAndStatus so the owner earnings breakdown never re-derives commission
+     *  client-side with a guessed rate. */
+    @Query("SELECT COALESCE(SUM(b.baseAmount), 0) FROM Booking b " +
+           "WHERE b.owner.user.id = :userId AND b.status = :status AND b.deleted = false")
+    BigDecimal sumBaseAmountByUserIdAndStatus(@Param("userId") Long userId,
+                                              @Param("status") BookingStatus status);
+
+    /** Real per-booking commission actually charged (not a recomputed guess). */
+    @Query("SELECT COALESCE(SUM(b.commissionAmount), 0) FROM Booking b " +
+           "WHERE b.owner.user.id = :userId AND b.status = :status AND b.deleted = false")
+    BigDecimal sumCommissionByUserIdAndStatus(@Param("userId") Long userId,
+                                              @Param("status") BookingStatus status);
 
     /** Customer's active booking for a specific bike */
     Optional<Booking> findByCustomerIdAndBikeIdAndStatusNotIn(
@@ -82,6 +100,27 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     /** Owner: bookings for a specific bike */
     Page<Booking> findByBikeIdAndDeletedFalse(Long bikeId, Pageable pageable);
 
+    /** Count of a bike's completed trips — shown to customers on the bike listing/detail pages */
+    long countByBikeIdAndStatusAndDeletedFalse(Long bikeId, BookingStatus status);
+
+    /**
+     * Batch version of countByBikeIdAndStatusAndDeletedFalse for a page of bikes — one query
+     * instead of one-per-bike when rendering a paginated bike listing (was a real N+1: up to
+     * 2 extra queries per row on every browse/my-bikes page).
+     */
+    @Query("""
+        SELECT b.bike.id AS bikeId, COUNT(b) AS tripCount FROM Booking b
+        WHERE b.bike.id IN :bikeIds AND b.status = :status AND b.deleted = false
+        GROUP BY b.bike.id
+        """)
+    List<BikeTripCount> countCompletedTripsForBikes(@Param("bikeIds") List<Long> bikeIds,
+                                                     @Param("status") BookingStatus status);
+
+    interface BikeTripCount {
+        Long getBikeId();
+        Long getTripCount();
+    }
+
     /** Admin: bookings filtered by status */
     Page<Booking> findByStatusAndDeletedFalse(BookingStatus status, Pageable pageable);
 
@@ -107,4 +146,18 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
 
     Page<Booking> findByDepositStatusAndDeletedFalseOrderByUpdatedAtDesc(
             DepositStatus depositStatus, Pageable pageable);
+
+    /** Locks the booking row to close check-then-act races (deposit claim filing, etc). */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT b FROM Booking b WHERE b.id = :id")
+    Optional<Booking> lockById(@Param("id") Long id);
+
+    /**
+     * Locks the booking row matching a Razorpay refund id, for the refund webhook handler —
+     * closes the race between two retried deliveries of the same event (Razorpay retries
+     * webhooks that don't 2xx promptly) both flipping the same booking's deposit status.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT b FROM Booking b WHERE b.depositRazorpayRefundId = :refundId")
+    Optional<Booking> lockByDepositRazorpayRefundId(@Param("refundId") String refundId);
 }

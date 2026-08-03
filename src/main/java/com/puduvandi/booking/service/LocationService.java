@@ -7,21 +7,26 @@ import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
+import com.puduvandi.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * One-time customer location capture for a booking — no continuous tracking.
  * Customer shares their GPS location once; the owner can view it afterwards.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class LocationService {
 
     private final BookingRepository bookingRepository;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     @Transactional
     public LocationResponse saveCustomerLocation(Long bookingId, Long customerUserId, LocationRequest request) {
@@ -36,6 +41,13 @@ public class LocationService {
         booking.setCurrentLongitude(request.longitude());
         booking.setLocationUpdatedAt(LocalDateTime.now());
         bookingRepository.save(booking);
+
+        try {
+            realtimeEventPublisher.locationUpdated(bookingId,
+                    List.of(booking.getOwner().getUser().getId()));
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime location update for bookingId={}", bookingId, ex);
+        }
 
         return toResponse(booking);
     }

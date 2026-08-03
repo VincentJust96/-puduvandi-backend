@@ -68,8 +68,11 @@ public class WebPushService {
     }
 
     @Transactional
-    public void unsubscribe(String endpoint) {
-        pushSubscriptionRepository.deleteByEndpoint(endpoint);
+    public void unsubscribe(Long userId, String endpoint) {
+        // Scoped to the caller's own userId — deleteByEndpoint alone would let
+        // any authenticated user silently kill another user's push subscription
+        // by guessing/observing their endpoint (IDOR).
+        pushSubscriptionRepository.deleteByEndpointAndUser_Id(endpoint, userId);
     }
 
     public void sendToUser(Long userId, String title, String body, String url) {

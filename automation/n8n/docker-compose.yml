@@ -1,0 +1,42 @@
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    expose:
+      - "5678"
+    environment:
+      # Basic auth was removed by n8n in favor of its own user-management login
+      # (the owner-account signup screen) — no env var replaces it, that account
+      # is created and stored via the UI on first run.
+      N8N_HOST: ${N8N_HOST:?N8N_HOST must be set in .env, e.g. 129-159-224-109.nip.io}
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: ${WEBHOOK_URL:?WEBHOOK_URL must be set in .env, e.g. https://<N8N_HOST>/}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Asia/Kolkata}
+      TZ: ${GENERIC_TIMEZONE:-Asia/Kolkata}
+      # Default 30s grant-token TTL is too tight for the task runner to start
+      # on this VM's limited CPU (E2.1.Micro) — executions were dying right
+      # after the trigger node with "invalid or expired grant token".
+      N8N_RUNNERS_GRANT_TOKEN_TTL: "120"
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      N8N_HOST: ${N8N_HOST:?N8N_HOST must be set in .env, e.g. 129-159-224-109.nip.io}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n
+
+volumes:
+  n8n_data:
+  caddy_data:
+  caddy_config:

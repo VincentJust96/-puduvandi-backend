@@ -17,12 +17,15 @@ import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.common.enums.DocumentType;
 import com.puduvandi.auth.entity.User;
 import com.puduvandi.auth.repository.UserRepository;
+import com.puduvandi.delivery.repository.DeliveryOrderRepository;
 import com.puduvandi.delivery.service.DeliveryService;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.notification.service.BookingConfirmationService;
 import com.puduvandi.push.service.WebPushService;
+import com.puduvandi.realtime.RealtimeEventPublisher;
+import com.puduvandi.review.repository.ReviewRepository;
 import com.puduvandi.user.entity.UserDocument;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
@@ -68,6 +71,9 @@ public class BookingService {
     private final DeliveryService deliveryService;
     private final UserDocumentRepository userDocumentRepository;
     private final WebPushService webPushService;
+    private final ReviewRepository reviewRepository;
+    private final DeliveryOrderRepository deliveryOrderRepository;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     @Value("${puduvandi.commission.default-percentage:20.0}")
     private BigDecimal defaultCommissionPercent;
@@ -249,6 +255,7 @@ public class BookingService {
             bookingConfirmationService.sendBookingConfirmation(booking);
             notifyOwnerOfNewBooking(booking);
         }
+        publishBookingUpdate(booking);
 
         return toResponse(booking);
     }
@@ -272,6 +279,21 @@ public class BookingService {
             log.info("Booking confirmed after payment: bookingId={}", bookingId);
             bookingConfirmationService.sendBookingConfirmation(booking);
             notifyOwnerOfNewBooking(booking);
+            publishBookingUpdate(booking);
+        }
+    }
+
+    /** Notifies whoever's watching (customer, owner, and the delivery partner if one is
+     *  assigned) that a booking's status changed, so their UI can silently re-fetch. */
+    private void publishBookingUpdate(Booking booking) {
+        try {
+            Long partnerUserId = deliveryOrderRepository.findFirstByBooking_IdAndPartnerIsNotNullOrderByIdDesc(booking.getId())
+                    .map(order -> order.getPartner().getId())
+                    .orElse(null);
+            realtimeEventPublisher.bookingUpdated(booking.getId(), booking.getStatus().name(),
+                    booking.getCustomer().getId(), booking.getOwner().getUser().getId(), partnerUserId);
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime booking update for bookingId={}", booking.getId(), ex);
         }
     }
 
@@ -314,6 +336,7 @@ public class BookingService {
         }
 
         log.info("Booking expired (payment window elapsed): bookingId={}", bookingId);
+        publishBookingUpdate(booking);
     }
 
     // ===== STATUS TRANSITIONS =====
@@ -334,6 +357,7 @@ public class BookingService {
         bookingRepository.save(booking);
 
         log.info("Ride started (OTP-verified): bookingId={}", bookingId);
+        publishBookingUpdate(booking);
         return toResponse(booking);
     }
 
@@ -355,6 +379,7 @@ public class BookingService {
         }
 
         log.info("Return requested: bookingId={}", bookingId);
+        publishBookingUpdate(booking);
         return toResponse(booking);
     }
 
@@ -381,6 +406,7 @@ public class BookingService {
 
         log.info("Booking completed: bookingId={}, bike released to AVAILABLE", bookingId);
         bookingConfirmationService.sendRideCompletionNotification(booking);
+        publishBookingUpdate(booking);
         return toResponse(booking);
     }
 
@@ -414,6 +440,7 @@ public class BookingService {
         }
 
         log.info("Booking cancelled: bookingId={}, reason={}", bookingId, request.reason());
+        publishBookingUpdate(booking);
         return toResponse(booking);
     }
 
@@ -428,16 +455,16 @@ public class BookingService {
 
     @Transactional(readOnly = true)
     public Page<BookingResponse> getMyBookings(Long customerId, int page, int size) {
-        return bookingRepository.findByCustomerIdAndDeletedFalse(
-                customerId, PageRequest.of(page, size, Sort.by("createdAt").descending()))
-                .map(this::toResponse);
+        Page<Booking> bookings = bookingRepository.findByCustomerIdAndDeletedFalse(
+                customerId, PageRequest.of(page, size, Sort.by("createdAt").descending()));
+        return toResponsePage(bookings);
     }
 
     @Transactional(readOnly = true)
     public Page<BookingResponse> getOwnerBookings(Long userId, int page, int size) {
-        return bookingRepository.findByOwner_UserIdAndDeletedFalse(
-                userId, PageRequest.of(page, size, Sort.by("createdAt").descending()))
-                .map(this::toResponse);
+        Page<Booking> bookings = bookingRepository.findByOwner_UserIdAndDeletedFalse(
+                userId, PageRequest.of(page, size, Sort.by("createdAt").descending()));
+        return toResponsePage(bookings);
     }
 
     @Transactional(readOnly = true)
@@ -554,6 +581,28 @@ public class BookingService {
     }
 
     private BookingResponse toResponse(Booking b) {
+        boolean reviewed = b.getStatus() == BookingStatus.COMPLETED && reviewRepository.existsByBookingId(b.getId());
+        return toResponse(b, reviewed);
+    }
+
+    /**
+     * Batches the per-booking "already reviewed?" lookup for an entire page into one query
+     * instead of one-per-row — was a real N+1 on every paginated booking-history call
+     * (customer/owner history, admin listing).
+     */
+    private Page<BookingResponse> toResponsePage(Page<Booking> bookings) {
+        List<Long> completedIds = bookings.getContent().stream()
+                .filter(b -> b.getStatus() == BookingStatus.COMPLETED)
+                .map(Booking::getId)
+                .toList();
+        java.util.Set<Long> reviewedIds = completedIds.isEmpty()
+                ? java.util.Set.of()
+                : reviewRepository.findReviewedBookingIds(completedIds);
+
+        return bookings.map(b -> toResponse(b, reviewedIds.contains(b.getId())));
+    }
+
+    private BookingResponse toResponse(Booking b, boolean reviewed) {
         boolean dayMode = b.getTotalDays().compareTo(BigDecimal.ONE) >= 0;
         int quantity = dayMode
                 ? b.getTotalDays().setScale(0, RoundingMode.CEILING).intValue()
@@ -588,7 +637,12 @@ public class BookingService {
                 b.getDeliveryType(),
                 customerLicenceUrl(b.getCustomer().getId()),
                 b.getDepositStatus(),
-                b.getDepositRefundAmount()
+                b.getDepositRefundAmount(),
+                reviewed,
+                b.getBike().getRcDocumentUrl(),
+                b.getBike().getInsuranceDocumentUrl(),
+                b.getBike().getInsurancePolicyNumber(),
+                b.getBike().getInsuranceExpiryDate()
         );
     }
 

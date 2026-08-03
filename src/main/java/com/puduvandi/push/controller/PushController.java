@@ -45,8 +45,10 @@ public class PushController {
     @DeleteMapping("/subscribe")
     @Operation(summary = "Remove a browser push subscription")
     @SecurityRequirement(name = "bearerAuth")
-    public ResponseEntity<ApiResponse<Void>> unsubscribe(@RequestParam String endpoint) {
-        webPushService.unsubscribe(endpoint);
+    public ResponseEntity<ApiResponse<Void>> unsubscribe(
+            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
+            @RequestParam String endpoint) {
+        webPushService.unsubscribe(principal.getUserId(), endpoint);
         return ResponseEntity.ok(ApiResponse.success("Unsubscribed"));
     }
 }

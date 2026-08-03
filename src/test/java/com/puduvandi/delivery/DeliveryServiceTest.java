@@ -41,6 +41,7 @@ class DeliveryServiceTest {
     @Mock private UserRepository userRepository;
     @Mock private PartnerProfileRepository partnerProfileRepository;
     @Mock private WebPushService webPushService;
+    @Mock private com.puduvandi.realtime.RealtimeEventPublisher realtimeEventPublisher;
 
     private DeliveryService deliveryService;
 
@@ -54,7 +55,7 @@ class DeliveryServiceTest {
     @BeforeEach
     void setUp() {
         deliveryService = new DeliveryService(deliveryOrderRepository, deliverySettingsRepository, userRepository,
-                partnerProfileRepository, webPushService);
+                partnerProfileRepository, webPushService, realtimeEventPublisher);
 
         partner = User.builder().id(PARTNER_ID).kycStatus(KycStatus.APPROVED).build();
         bike = Bike.builder().id(10L).brand("Honda").model("Activa")

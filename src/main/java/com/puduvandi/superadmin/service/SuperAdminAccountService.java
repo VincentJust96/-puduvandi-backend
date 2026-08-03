@@ -1,6 +1,7 @@
 package com.puduvandi.superadmin.service;
 
 import com.puduvandi.admin.dto.AdminUserResponse;
+import com.puduvandi.audit.service.AdminAuditService;
 import com.puduvandi.auth.entity.User;
 import com.puduvandi.auth.repository.UserRepository;
 import com.puduvandi.common.enums.KycStatus;
@@ -31,6 +32,7 @@ import java.util.List;
 public class SuperAdminAccountService {
 
     private final UserRepository userRepository;
+    private final AdminAuditService adminAuditService;
 
     @Transactional(readOnly = true)
     public Page<AdminUserResponse> listAdmins(int page, int size) {
@@ -58,6 +60,8 @@ public class SuperAdminAccountService {
 
         User saved = userRepository.save(admin);
         log.warn("Super admin created ADMIN account userId={} phone={}", saved.getId(), saved.getPhoneNumber());
+        adminAuditService.recordCurrentActor("CREATE_ADMIN_ACCOUNT", "User", String.valueOf(saved.getId()),
+                null, java.util.Map.of("role", "ADMIN", "phoneNumber", saved.getPhoneNumber()));
         return toResponse(saved);
     }
 
@@ -74,6 +78,8 @@ public class SuperAdminAccountService {
         user.setEmail(null);
         userRepository.save(user);
         log.warn("Super admin removed ADMIN account userId={}", userId);
+        adminAuditService.recordCurrentActor("DELETE_ADMIN_ACCOUNT", "User", String.valueOf(userId),
+                java.util.Map.of("deleted", false), java.util.Map.of("deleted", true));
     }
 
     private AdminUserResponse toResponse(User user) {

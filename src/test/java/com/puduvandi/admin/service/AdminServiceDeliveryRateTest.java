@@ -8,12 +8,14 @@ import com.puduvandi.admin.repository.CommissionSettingsRepository;
 import com.puduvandi.delivery.dto.DeliveryRateResponse;
 import com.puduvandi.delivery.dto.UpdateDeliveryRateRequest;
 import com.puduvandi.delivery.entity.DeliverySettings;
+import com.puduvandi.delivery.repository.DeliveryOrderRepository;
 import com.puduvandi.delivery.repository.DeliverySettingsRepository;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.owner.repository.OwnerDocumentRepository;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
 import com.puduvandi.partner.repository.PartnerDocumentRepository;
 import com.puduvandi.partner.repository.PartnerProfileRepository;
+import com.puduvandi.review.repository.ReviewRepository;
 import com.puduvandi.user.repository.PhoneChangeRequestRepository;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,7 +56,11 @@ class AdminServiceDeliveryRateTest {
     @Mock private OwnerDocumentRepository ownerDocumentRepository;
     @Mock private PhoneChangeRequestRepository phoneChangeRequestRepository;
     @Mock private PartnerDocumentRepository partnerDocumentRepository;
+    @Mock private ReviewRepository reviewRepository;
+    @Mock private DeliveryOrderRepository deliveryOrderRepository;
     @Mock private JdbcTemplate jdbcTemplate;
+    @Mock private com.puduvandi.realtime.RealtimeEventPublisher realtimeEventPublisher;
+    @Mock private com.puduvandi.audit.service.AdminAuditService adminAuditService;
 
     private AdminService adminService;
 
@@ -66,7 +72,8 @@ class AdminServiceDeliveryRateTest {
         adminService = new AdminService(userRepository, ownerProfileRepository, partnerProfileRepository,
                 bikeRepository, bookingRepository, commissionSettingsRepository,
                 deliverySettingsRepository, userDocumentRepository, ownerDocumentRepository,
-                phoneChangeRequestRepository, partnerDocumentRepository, jdbcTemplate);
+                phoneChangeRequestRepository, partnerDocumentRepository, reviewRepository,
+                deliveryOrderRepository, jdbcTemplate, realtimeEventPublisher, adminAuditService);
         admin = User.builder().id(ADMIN_ID).fullName("Admin One").build();
     }
 

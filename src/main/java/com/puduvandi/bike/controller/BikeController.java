@@ -7,6 +7,8 @@ import com.puduvandi.bike.service.BikeService;
 import com.puduvandi.common.dto.ApiResponse;
 import com.puduvandi.common.enums.FuelType;
 import com.puduvandi.common.enums.TransmissionType;
+import com.puduvandi.review.dto.BikeReviewResponse;
+import com.puduvandi.review.service.ReviewService;
 import com.puduvandi.security.PuduvandiUserPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -14,7 +16,9 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -34,6 +38,7 @@ import java.math.BigDecimal;
 public class BikeController {
 
     private final BikeService bikeService;
+    private final ReviewService reviewService;
 
     // ===== PUBLIC ENDPOINTS (No auth required) =====
 
@@ -72,6 +77,40 @@ public class BikeController {
     public ResponseEntity<ApiResponse<BikeResponse>> getBikeDetails(@PathVariable Long id) {
         BikeResponse bike = bikeService.getBikeDetails(id);
         return ResponseEntity.ok(ApiResponse.success("Bike details fetched", bike));
+    }
+
+    /**
+     * GET /api/v1/bikes/{id}/reviews
+     * Public listing of a bike's reviews — the average rating already appears
+     * on the bike listing/detail response, but individual comments were
+     * previously write-only (submitted once, never surfaced anywhere).
+     */
+    @GetMapping("/{id}/reviews")
+    @Operation(summary = "List a bike's reviews")
+    public ResponseEntity<ApiResponse<Page<BikeReviewResponse>>> getBikeReviews(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        Page<BikeReviewResponse> reviews = reviewService.listReviewsForBike(id, page, size);
+        return ResponseEntity.ok(ApiResponse.success("Reviews fetched", reviews));
+    }
+
+    /**
+     * GET /api/v1/bikes/{id}/insurance-document
+     * Streams the bike's insurance PDF for inline viewing, decrypted server-side if the
+     * owner's stored password unlocks it — the password itself is never sent to the
+     * client, only ever used here to produce a plain PDF stream. Meant to be pointed at
+     * directly (e.g. an &lt;iframe src&gt;), not called through the JSON API client.
+     */
+    @GetMapping("/{id}/insurance-document")
+    @Operation(summary = "View a bike's insurance document",
+            description = "Returns the raw PDF bytes, decrypted server-side if it was password-protected.")
+    public ResponseEntity<byte[]> getInsuranceDocument(@PathVariable Long id) {
+        byte[] pdfBytes = bikeService.loadInsuranceDocument(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"insurance.pdf\"")
+                .body(pdfBytes);
     }
 
     // ===== OWNER ENDPOINTS =====

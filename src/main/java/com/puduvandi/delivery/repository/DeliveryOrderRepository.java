@@ -22,6 +22,12 @@ public interface DeliveryOrderRepository extends JpaRepository<DeliveryOrder, Lo
 
     List<DeliveryOrder> findByPartnerIdOrderByCreatedAtDesc(Long partnerId);
 
+    long countByPartnerIdAndStatusIn(Long partnerId, List<DeliveryStatus> statuses);
+
+    /** Most recently assigned partner for a booking (covers whichever leg — outbound or return —
+     *  currently has one claimed), used to CC the partner on realtime booking-status pushes. */
+    Optional<DeliveryOrder> findFirstByBooking_IdAndPartnerIsNotNullOrderByIdDesc(Long bookingId);
+
     /**
      * Acquires a row-level pessimistic write lock on the delivery order, serializing
      * concurrent claim attempts by different partners for the same job so the PENDING

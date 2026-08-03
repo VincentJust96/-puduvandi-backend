@@ -2,6 +2,7 @@ package com.puduvandi.errorlog.service;
 
 import com.puduvandi.errorlog.entity.ErrorLog;
 import com.puduvandi.errorlog.repository.ErrorLogRepository;
+import com.puduvandi.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,7 @@ import java.io.StringWriter;
 public class ErrorLogService {
 
     private final ErrorLogRepository errorLogRepository;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     // ===== Fluent entry points =====
 
@@ -80,7 +82,10 @@ public class ErrorLogService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void save(ErrorLog errorLog) {
         try {
-            errorLogRepository.save(errorLog);
+            ErrorLog saved = errorLogRepository.save(errorLog);
+            realtimeEventPublisher.adminAlert("error-log", java.util.Map.of(
+                    "errorLogId", saved.getId(),
+                    "severity", saved.getSeverity() != null ? saved.getSeverity() : ""));
         } catch (Exception ex) {
             // Last resort: write to application log so the error isn't silently lost
             log.error("CRITICAL: Failed to persist error log entry. Original error: {}. Save error: {}",

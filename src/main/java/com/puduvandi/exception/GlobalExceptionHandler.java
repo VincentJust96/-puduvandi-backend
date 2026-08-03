@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -66,6 +67,35 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleForbidden(RuntimeException ex) {
         log.warn("Forbidden access: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    /**
+     * A concurrent request slipped past an app-level check-then-act guard and hit a DB
+     * unique/FK constraint instead (e.g. two simultaneous review submissions for the same
+     * booking, or two simultaneous signups for the same phone/email). Reported as a normal
+     * 409 rather than falling through to the generic 500 handler below.
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleDataIntegrityViolation(
+            DataIntegrityViolationException ex, HttpServletRequest request) {
+        log.warn("Data integrity violation: {}", ex.getMessage());
+        errorLogService.logApiError(ex, request.getRequestURI(), request.getMethod(), currentUserId());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error("This action conflicts with an existing record. Please refresh and try again."));
+    }
+
+    /**
+     * A concurrent request is holding the same row (another in-flight update, or — as seen live —
+     * a debugger paused mid-transaction) past the DB's lock_timeout (see application.yml's
+     * datasource.hikari.connection-init-sql). Expected under concurrent access, not a bug — treated
+     * like DataIntegrityViolationException above: a normal 409, not logged to error_logs.
+     */
+    @ExceptionHandler({org.springframework.dao.PessimisticLockingFailureException.class,
+            org.springframework.dao.QueryTimeoutException.class})
+    public ResponseEntity<ApiResponse<Void>> handleLockTimeout(Exception ex) {
+        log.warn("Lock/query timeout: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error("This booking is being updated by another request right now. Please try again in a moment."));
     }
 
     // ===== Errors worth persisting to DB =====

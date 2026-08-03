@@ -1,5 +1,6 @@
 package com.puduvandi.superadmin.service;
 
+import com.puduvandi.audit.service.AdminAuditService;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ConflictException;
 import com.puduvandi.exception.ForbiddenException;
@@ -32,6 +33,7 @@ import java.util.stream.Collectors;
 public class SuperAdminDataService {
 
     private final JdbcTemplate jdbcTemplate;
+    private final AdminAuditService adminAuditService;
 
     /** Editing Flyway's own bookkeeping table is not "generic DB admin" — it's guaranteed breakage. */
     private static final Set<String> EXCLUDED_TABLES = Set.of("flyway_schema_history");
@@ -91,6 +93,10 @@ public class SuperAdminDataService {
         String pk = requireSingleColumnPrimaryKey(table);
         Map<String, ColumnMetaResponse> columnsByName = getColumns(table).stream()
                 .collect(Collectors.toMap(ColumnMetaResponse::name, c -> c));
+        Set<String> sensitiveCols = columnsByName.values().stream()
+                .filter(ColumnMetaResponse::sensitive).map(ColumnMetaResponse::name).collect(Collectors.toSet());
+        Map<String, Object> beforeRow = fetchRowByPk(table, pk, columnsByName.get(pk).dataType(), pkValue)
+                .map(row -> maskRow(row, sensitiveCols)).orElse(null);
 
         StringBuilder sql = new StringBuilder("UPDATE \"").append(table).append("\" SET ");
         List<Object> params = new ArrayList<>();
@@ -128,17 +134,25 @@ public class SuperAdminDataService {
             throw new ResourceNotFoundException("Row with " + pk + "=" + pkValue + " not found in " + table);
         }
         log.warn("Super admin updated table={} pk={} columns={}", table, pkValue, changes.keySet());
+        Map<String, Object> afterRow = fetchRowByPk(table, pk, columnsByName.get(pk).dataType(), pkValue)
+                .map(row -> maskRow(row, sensitiveCols)).orElse(null);
+        adminAuditService.recordCurrentActor("RAW_ROW_UPDATE", table, pkValue, beforeRow, afterRow);
     }
 
     @Transactional
     public void deleteRow(String tableName, String pkValue) {
         String table = validateTable(tableName);
         String pk = requireSingleColumnPrimaryKey(table);
-        String pkDataType = getColumns(table).stream()
+        List<ColumnMetaResponse> columns = getColumns(table);
+        String pkDataType = columns.stream()
                 .filter(ColumnMetaResponse::primaryKey)
                 .findFirst()
                 .map(ColumnMetaResponse::dataType)
                 .orElseThrow(() -> new BusinessException("Table '" + table + "' has no single-column primary key"));
+        Set<String> sensitiveCols = columns.stream()
+                .filter(ColumnMetaResponse::sensitive).map(ColumnMetaResponse::name).collect(Collectors.toSet());
+        Map<String, Object> beforeRow = fetchRowByPk(table, pk, pkDataType, pkValue)
+                .map(row -> maskRow(row, sensitiveCols)).orElse(null);
 
         int deleted;
         try {
@@ -151,6 +165,7 @@ public class SuperAdminDataService {
             throw new ResourceNotFoundException("Row with " + pk + "=" + pkValue + " not found in " + table);
         }
         log.warn("Super admin deleted row table={} pk={}", table, pkValue);
+        adminAuditService.recordCurrentActor("RAW_ROW_DELETE", table, pkValue, beforeRow, null);
     }
 
     @Transactional
@@ -188,6 +203,14 @@ public class SuperAdminDataService {
             throw new ConflictException("Could not add unique constraint: " + rootMessage(ex));
         }
         log.warn("Super admin added UNIQUE constraint on {}.{}", table, columnName);
+        adminAuditService.recordCurrentActor("ADD_UNIQUE_CONSTRAINT", table, columnName,
+                Map.of("unique", false), Map.of("unique", true, "constraintName", constraintName));
+    }
+
+    private Optional<Map<String, Object>> fetchRowByPk(String table, String pk, String pkDataType, String pkValue) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT * FROM \"" + table + "\" WHERE \"" + pk + "\" = ?::" + pkDataType, pkValue);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
     // ===== Schema introspection helpers =====

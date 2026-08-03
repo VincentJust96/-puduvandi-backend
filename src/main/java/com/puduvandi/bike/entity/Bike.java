@@ -5,11 +5,13 @@ import com.puduvandi.common.enums.BikeStatus;
 import com.puduvandi.common.enums.BikeVerificationStatus;
 import com.puduvandi.common.enums.FuelType;
 import com.puduvandi.common.enums.TransmissionType;
+import com.puduvandi.common.crypto.EncryptedStringConverter;
 import com.puduvandi.owner.entity.OwnerProfile;
 import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -60,6 +62,18 @@ public class Bike extends BaseEntity {
     @Column(name = "helmet_included", nullable = false)
     private boolean helmetIncluded;
 
+    @Column(name = "papers_included", nullable = false)
+    @Builder.Default
+    private boolean papersIncluded = true;
+
+    @Column(name = "fuel_included", nullable = false)
+    @Builder.Default
+    private boolean fuelIncluded = true;
+
+    @Column(name = "roadside_assistance", nullable = false)
+    @Builder.Default
+    private boolean roadsideAssistance = true;
+
     @Column(name = "price_per_hour", nullable = false, precision = 10, scale = 2)
     private BigDecimal pricePerHour;
 
@@ -96,4 +110,24 @@ public class Bike extends BaseEntity {
 
     @Column(name = "area", length = 150)
     private String area;
+
+    @Column(name = "rc_document_url", length = 500)
+    private String rcDocumentUrl;
+
+    @Column(name = "insurance_document_url", length = 500)
+    private String insuranceDocumentUrl;
+
+    @Column(name = "insurance_policy_number", length = 100)
+    private String insurancePolicyNumber;
+
+    @Column(name = "insurance_expiry_date")
+    private LocalDate insuranceExpiryDate;
+
+    // Admin/super-admin-only — never included in the customer/owner-facing
+    // BikeResponse mapping, see BikeService.toResponse vs AdminService.toBikeResponse.
+    // Encrypted at rest — see EncryptedStringConverter for the "v1:" ciphertext
+    // format and why read failures return null instead of throwing.
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "insurance_document_password", length = 500)
+    private String insuranceDocumentPassword;
 }

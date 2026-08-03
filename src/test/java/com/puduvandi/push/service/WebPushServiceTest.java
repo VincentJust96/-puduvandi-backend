@@ -101,11 +101,11 @@ class WebPushServiceTest {
     // ===== unsubscribe =====
 
     @Test
-    @DisplayName("unsubscribe: deletes by endpoint")
-    void unsubscribe_deletesByEndpoint() {
-        webPushService.unsubscribe("https://push.example/ep1");
+    @DisplayName("unsubscribe: deletes by endpoint scoped to the caller's userId")
+    void unsubscribe_deletesByEndpointScopedToUser() {
+        webPushService.unsubscribe(USER_ID, "https://push.example/ep1");
 
-        verify(pushSubscriptionRepository).deleteByEndpoint("https://push.example/ep1");
+        verify(pushSubscriptionRepository).deleteByEndpointAndUser_Id("https://push.example/ep1", USER_ID);
     }
 
     // ===== sendToUsers / sendToUser =====

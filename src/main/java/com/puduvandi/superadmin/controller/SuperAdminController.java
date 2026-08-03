@@ -125,6 +125,15 @@ public class SuperAdminController {
         return ResponseEntity.ok(ApiResponse.success("Users fetched", adminService.listUsers(role, status, page, size)));
     }
 
+    @GetMapping("/users/pending")
+    @Operation(summary = "List signups that verified OTP but never picked a role (no real account yet)")
+    public ResponseEntity<ApiResponse<Page<AdminUserResponse>>> listPendingSignups(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        return ResponseEntity.ok(ApiResponse.success("Pending signups fetched", adminService.listPendingSignups(page, size)));
+    }
+
     @PutMapping("/users/{userId}")
     @Operation(summary = "Edit a user's basic profile fields")
     public ResponseEntity<ApiResponse<AdminUserResponse>> updateUser(
@@ -209,7 +218,7 @@ public class SuperAdminController {
 
     @PostMapping("/reset-local-data")
     @Operation(summary = "DANGER: wipe all owners/customers/partners/bikes/bookings, keep only ADMIN/SUPER_ADMIN users. " +
-            "Blocked unless PUDUVANDI_ENV is unset or \"local\" — never staging/production.")
+            "Blocked unless PUDUVANDI_ENV is exactly \"local\" — never unset, staging, or production.")
     public ResponseEntity<ApiResponse<AdminDataResetResponse>> resetLocalData(@Valid @RequestBody ResetLocalDataRequest request) {
         AdminDataResetResponse response = adminService.resetLocalData(request.confirmationPhrase());
         return ResponseEntity.ok(ApiResponse.success("Local data reset complete", response));

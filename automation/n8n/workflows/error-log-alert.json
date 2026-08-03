@@ -1,0 +1,85 @@
+{
+  "name": "Puduvandi - error_logs alert",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "2a3a2ec7-a142-40d9-b598-f2a0b318df2b",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [-160, -80]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, severity, error_code, error_message, source, entity_type, entity_id, user_id, request_method, request_path, created_at\nFROM error_logs\nWHERE severity = 'ERROR' AND created_at > NOW() - INTERVAL '5 minutes'\nORDER BY created_at DESC",
+        "options": {}
+      },
+      "id": "6c98f93c-8397-4350-a8f8-ab71cbdb9ebb",
+      "name": "Execute a SQL query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [144, -80],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "Puduvandi Neon DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nif (staticData.lastId === undefined) staticData.lastId = 0;\n\nconst newItems = items.filter(item => item.json.id > staticData.lastId);\n\nif (newItems.length > 0) {\n  staticData.lastId = Math.max(...items.map(item => item.json.id));\n}\n\nreturn newItems;"
+      },
+      "id": "d1e2f3a4-0000-0000-0000-000000000099",
+      "name": "Code in JavaScript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, -160]
+    },
+    {
+      "parameters": {
+        "fromEmail": "REPLACE_WITH_YOUR_EMAIL",
+        "toEmail": "REPLACE_WITH_YOUR_EMAIL",
+        "subject": "=[Puduvandi] ERROR log #{{$json.id}} - {{$json.error_code}}",
+        "emailFormat": "text",
+        "text": "=A new ERROR-severity log was recorded.\n\nid: {{$json.id}}\nerror_code: {{$json.error_code}}\nmessage: {{$json.error_message}}\nsource: {{$json.source}}\nentity: {{$json.entity_type}} #{{$json.entity_id}}\nuser_id: {{$json.user_id}}\nrequest: {{$json.request_method}} {{$json.request_path}}\ncreated_at: {{$json.created_at}}\n\nFull stack trace: GET /api/v1/admin/error-logs/{{$json.id}}",
+        "options": {}
+      },
+      "id": "6629ffd3-aaba-44bd-8393-455c295e5209",
+      "name": "Send alert email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [700, -80],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_ME",
+          "name": "Alert SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Execute a SQL query", "type": "main", "index": 0 }]]
+    },
+    "Execute a SQL query": {
+      "main": [[{ "node": "Code in JavaScript", "type": "main", "index": 0 }]]
+    },
+    "Code in JavaScript": {
+      "main": [[{ "node": "Send alert email", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {},
+  "pinData": {}
+}

@@ -169,4 +169,14 @@ public class OwnerController {
         DepositClaimResponse response = depositClaimService.fileClaim(principal.getUserId(), bookingId, request);
         return ResponseEntity.ok(ApiResponse.success("Deposit claim filed", response));
     }
+
+    @PostMapping("/bookings/{bookingId}/instant-refund")
+    @Operation(summary = "Instantly refund a completed booking's full security deposit, no admin review needed")
+    public ResponseEntity<ApiResponse<Void>> instantRefund(
+            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
+            @PathVariable Long bookingId) {
+
+        depositClaimService.instantRefund(principal.getUserId(), bookingId);
+        return ResponseEntity.ok(ApiResponse.success("Deposit refunded to the customer"));
+    }
 }

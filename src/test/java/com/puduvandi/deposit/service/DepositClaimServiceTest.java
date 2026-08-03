@@ -40,6 +40,8 @@ class DepositClaimServiceTest {
     @Mock private UserRepository userRepository;
     @Mock private PaymentService paymentService;
     @Mock private com.puduvandi.push.service.WebPushService webPushService;
+    @Mock private com.puduvandi.realtime.RealtimeEventPublisher realtimeEventPublisher;
+    @Mock private com.puduvandi.audit.service.AdminAuditService adminAuditService;
 
     private DepositClaimService depositClaimService;
 
@@ -52,7 +54,12 @@ class DepositClaimServiceTest {
 
     @BeforeEach
     void setUp() {
-        depositClaimService = new DepositClaimService(depositClaimRepository, bookingRepository, userRepository, paymentService, webPushService);
+        depositClaimService = new DepositClaimService(depositClaimRepository, bookingRepository, userRepository, paymentService, webPushService, realtimeEventPublisher, adminAuditService);
+        // `self` is normally the Spring-proxied self-reference instantRefund() uses to route
+        // claimForInstantRefund() through the REQUIRES_NEW proxy — no proxy exists in a plain
+        // unit test, so wire it directly to the real instance (self-invocation is fine here; the
+        // transaction isolation itself is out of scope for a Mockito-based unit test).
+        org.springframework.test.util.ReflectionTestUtils.setField(depositClaimService, "self", depositClaimService);
         owner = User.builder().id(OWNER_USER_ID).fullName("Muthu").build();
         admin = User.builder().id(ADMIN_USER_ID).fullName("Admin One").build();
     }
@@ -89,6 +96,7 @@ class DepositClaimServiceTest {
         booking.setStatus(BookingStatus.RIDE_STARTED);
         when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
                 .thenReturn(Optional.of(booking));
+        when(bookingRepository.lockById(BOOKING_ID)).thenReturn(Optional.of(booking));
 
         assertThatThrownBy(() -> depositClaimService.fileClaim(
                 OWNER_USER_ID, BOOKING_ID, new FileDepositClaimRequest(new BigDecimal("100.00"), "Scratched tank", null)))
@@ -102,6 +110,7 @@ class DepositClaimServiceTest {
         Booking booking = completedBooking(DepositStatus.CLAIM_PENDING);
         when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
                 .thenReturn(Optional.of(booking));
+        when(bookingRepository.lockById(BOOKING_ID)).thenReturn(Optional.of(booking));
 
         assertThatThrownBy(() -> depositClaimService.fileClaim(
                 OWNER_USER_ID, BOOKING_ID, new FileDepositClaimRequest(new BigDecimal("100.00"), "Scratched tank", null)))
@@ -115,6 +124,7 @@ class DepositClaimServiceTest {
         Booking booking = completedBooking(DepositStatus.HELD);
         when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
                 .thenReturn(Optional.of(booking));
+        when(bookingRepository.lockById(BOOKING_ID)).thenReturn(Optional.of(booking));
 
         assertThatThrownBy(() -> depositClaimService.fileClaim(
                 OWNER_USER_ID, BOOKING_ID, new FileDepositClaimRequest(new BigDecimal("600.00"), "Totalled it", null)))
@@ -128,6 +138,7 @@ class DepositClaimServiceTest {
         Booking booking = completedBooking(DepositStatus.HELD);
         when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
                 .thenReturn(Optional.of(booking));
+        when(bookingRepository.lockById(BOOKING_ID)).thenReturn(Optional.of(booking));
         when(userRepository.getReferenceById(OWNER_USER_ID)).thenReturn(owner);
         when(depositClaimRepository.save(any(DepositClaim.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -140,12 +151,74 @@ class DepositClaimServiceTest {
         verify(bookingRepository).save(booking);
     }
 
+    // ===== instantRefund =====
+
+    @Test
+    @DisplayName("instantRefund: booking not owned by this owner throws ResourceNotFoundException")
+    void instantRefund_bookingNotFound_throws() {
+        when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> depositClaimService.instantRefund(OWNER_USER_ID, BOOKING_ID))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verifyNoInteractions(paymentService);
+    }
+
+    @Test
+    @DisplayName("instantRefund: booking not COMPLETED is rejected")
+    void instantRefund_notCompleted_throws() {
+        Booking booking = completedBooking(DepositStatus.HELD);
+        booking.setStatus(BookingStatus.RIDE_STARTED);
+        when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
+                .thenReturn(Optional.of(booking));
+        when(bookingRepository.lockById(BOOKING_ID)).thenReturn(Optional.of(booking));
+
+        assertThatThrownBy(() -> depositClaimService.instantRefund(OWNER_USER_ID, BOOKING_ID))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("completed");
+
+        verifyNoInteractions(paymentService);
+    }
+
+    @Test
+    @DisplayName("instantRefund: deposit not HELD (already claimed/resolved) is rejected — also the " +
+            "guard a concurrent second call relies on, since claimForInstantRefund() flips to " +
+            "REFUND_INITIATED before refundDeposit() ever runs")
+    void instantRefund_depositNotHeld_throws() {
+        Booking booking = completedBooking(DepositStatus.REFUND_INITIATED);
+        when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
+                .thenReturn(Optional.of(booking));
+        when(bookingRepository.lockById(BOOKING_ID)).thenReturn(Optional.of(booking));
+
+        assertThatThrownBy(() -> depositClaimService.instantRefund(OWNER_USER_ID, BOOKING_ID))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("not eligible");
+
+        verifyNoInteractions(paymentService);
+    }
+
+    @Test
+    @DisplayName("instantRefund: valid request claims the booking (REFUND_INITIATED) then calls refundDeposit for the full deposit")
+    void instantRefund_valid_claimsThenRefunds() {
+        Booking booking = completedBooking(DepositStatus.HELD);
+        when(bookingRepository.findByIdAndOwner_UserIdAndDeletedFalse(BOOKING_ID, OWNER_USER_ID))
+                .thenReturn(Optional.of(booking));
+        when(bookingRepository.lockById(BOOKING_ID)).thenReturn(Optional.of(booking));
+        when(bookingRepository.save(any(Booking.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        depositClaimService.instantRefund(OWNER_USER_ID, BOOKING_ID);
+
+        assertThat(booking.getDepositStatus()).isEqualTo(DepositStatus.REFUND_INITIATED);
+        verify(paymentService).refundDeposit(booking, booking.getSecurityDeposit());
+    }
+
     // ===== approveClaim / rejectClaim =====
 
     @Test
     @DisplayName("approveClaim: unknown claim throws ResourceNotFoundException")
     void approveClaim_unknownClaim_throws() {
-        when(depositClaimRepository.findById(99L)).thenReturn(Optional.empty());
+        when(depositClaimRepository.lockById(99L)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> depositClaimService.approveClaim(ADMIN_USER_ID, 99L))
                 .isInstanceOf(ResourceNotFoundException.class);
@@ -157,7 +230,7 @@ class DepositClaimServiceTest {
     @DisplayName("approveClaim: already-decided claim is rejected")
     void approveClaim_alreadyDecided_throws() {
         DepositClaim claim = DepositClaim.builder().id(1L).status(DocumentStatus.APPROVED).build();
-        when(depositClaimRepository.findById(1L)).thenReturn(Optional.of(claim));
+        when(depositClaimRepository.lockById(1L)).thenReturn(Optional.of(claim));
 
         assertThatThrownBy(() -> depositClaimService.approveClaim(ADMIN_USER_ID, 1L))
                 .isInstanceOf(BusinessException.class)
@@ -177,7 +250,7 @@ class DepositClaimServiceTest {
                 .deductionAmount(new BigDecimal("150.00"))
                 .status(DocumentStatus.PENDING)
                 .build();
-        when(depositClaimRepository.findById(1L)).thenReturn(Optional.of(claim));
+        when(depositClaimRepository.lockById(1L)).thenReturn(Optional.of(claim));
         when(userRepository.getReferenceById(ADMIN_USER_ID)).thenReturn(admin);
         when(depositClaimRepository.save(any(DepositClaim.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -198,7 +271,7 @@ class DepositClaimServiceTest {
                 .deductionAmount(new BigDecimal("150.00"))
                 .status(DocumentStatus.PENDING)
                 .build();
-        when(depositClaimRepository.findById(1L)).thenReturn(Optional.of(claim));
+        when(depositClaimRepository.lockById(1L)).thenReturn(Optional.of(claim));
         when(userRepository.getReferenceById(ADMIN_USER_ID)).thenReturn(admin);
         ArgumentCaptor<DepositClaim> captor = ArgumentCaptor.forClass(DepositClaim.class);
         when(depositClaimRepository.save(captor.capture())).thenAnswer(inv -> inv.getArgument(0));

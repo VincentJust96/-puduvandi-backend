@@ -88,7 +88,10 @@ public class OwnerService {
 
         // Uploading a KYC document — not merely filling in business/address
         // details — is what actually puts the owner up for admin review.
-        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED) {
+        // Also re-queues a previously REJECTED owner: without this, rejectOwnerKyc
+        // leaving kycStatus=REJECTED forever would give the owner no way back onto
+        // the review queue even after fixing the documents that got them rejected.
+        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED || user.getKycStatus() == KycStatus.REJECTED) {
             user.setKycStatus(KycStatus.PENDING);
             userRepository.save(user);
         }
@@ -121,8 +124,13 @@ public class OwnerService {
                 userId, List.of(BookingStatus.CONFIRMED, BookingStatus.RIDE_STARTED, BookingStatus.RETURN_REQUESTED));
         BigDecimal totalEarnings = bookingRepository.sumOwnerEarningsByUserIdAndStatus(userId, BookingStatus.COMPLETED);
         if (totalEarnings == null) totalEarnings = BigDecimal.ZERO;
+        BigDecimal totalRevenue = bookingRepository.sumBaseAmountByUserIdAndStatus(userId, BookingStatus.COMPLETED);
+        if (totalRevenue == null) totalRevenue = BigDecimal.ZERO;
+        BigDecimal totalCommission = bookingRepository.sumCommissionByUserIdAndStatus(userId, BookingStatus.COMPLETED);
+        if (totalCommission == null) totalCommission = BigDecimal.ZERO;
 
-        return new OwnerDashboardResponse(totalBikes, totalBookings, activeBookings, totalEarnings);
+        return new OwnerDashboardResponse(
+                totalBikes, totalBookings, activeBookings, totalEarnings, totalRevenue, totalCommission);
     }
 
     // ===== Private Helpers =====

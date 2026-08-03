@@ -14,6 +14,7 @@ import com.puduvandi.delivery.service.DeliveryService;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.notification.service.BookingConfirmationService;
+import com.puduvandi.review.repository.ReviewRepository;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -48,6 +49,9 @@ class BookingServiceTransitionTest {
     @Mock private DeliveryService deliveryService;
     @Mock private UserDocumentRepository userDocumentRepository;
     @Mock private com.puduvandi.push.service.WebPushService webPushService;
+    @Mock private ReviewRepository reviewRepository;
+    @Mock private com.puduvandi.delivery.repository.DeliveryOrderRepository deliveryOrderRepository;
+    @Mock private com.puduvandi.realtime.RealtimeEventPublisher realtimeEventPublisher;
 
     private BookingService bookingService;
 
@@ -59,7 +63,8 @@ class BookingServiceTransitionTest {
     @BeforeEach
     void setUp() {
         bookingService = new BookingService(bookingRepository, bikeRepository, userRepository,
-                bookingConfirmationService, deliveryService, userDocumentRepository, webPushService);
+                bookingConfirmationService, deliveryService, userDocumentRepository, webPushService,
+                reviewRepository, deliveryOrderRepository, realtimeEventPublisher);
 
         User customer = User.builder().id(1L).fullName("Cust").build();
         bike = Bike.builder().id(10L).brand("Honda").model("Activa").registrationNumber("KA-01-AB-1234")

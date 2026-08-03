@@ -23,7 +23,10 @@ import com.razorpay.Utils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONObject;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -54,6 +57,15 @@ public class PaymentService {
     private final RazorpayConfig razorpayConfig;
     private final ErrorLogService errorLogService;
     private final WebPushService webPushService;
+
+    // Self-reference (lazily resolved to the Spring proxy) so that
+    // releaseUnclaimedDeposits()'s loop calls refundDeposit() THROUGH the
+    // proxy rather than as a plain self-invocation — required for the
+    // REQUIRES_NEW propagation on refundDeposit to actually isolate each
+    // booking's refund into its own transaction (see releaseUnclaimedDeposits).
+    @Autowired
+    @Lazy
+    private PaymentService self;
 
     /**
      * Creates (or re-creates, for a retry) a Payment covering all given bookings and asks
@@ -243,8 +255,21 @@ public class PaymentService {
      * trade-off" note: this is always correct for the FULL plan and correct in the
      * overwhelming majority of DEPOSIT-plan cases, since there's no history table
      * linking a booking to every payment it ever had.
+     * <p>
+     * A real (non-mock) Razorpay refund only reaches REFUND_INITIATED here — Razorpay
+     * accepting the request isn't the same as the bank actually settling it. REFUNDED
+     * (and depositRefundedAt) is only set once handleRefundWebhookEvent() sees the
+     * refund.processed webhook. Mock mode and the zero-amount/no-payment paths have no
+     * external confirmation to wait for, so they go straight to REFUNDED.
+     * <p>
+     * REQUIRES_NEW: this commits independently of whatever transaction the caller
+     * is in. Without this, a later failure in the caller (e.g. the next booking in
+     * releaseUnclaimedDeposits' batch loop, or a later step in DepositClaimService's
+     * approve/reject) would roll back this refund's DB bookkeeping even though the
+     * real Razorpay refund already went through — leaving the booking looking HELD
+     * while the money has actually moved, which risks a second, duplicate refund.
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void refundDeposit(Booking booking, BigDecimal refundAmount) {
         if (refundAmount.compareTo(BigDecimal.ZERO) == 0) {
             markRefunded(booking, BigDecimal.ZERO);
@@ -269,10 +294,17 @@ public class PaymentService {
             JSONObject refundRequest = new JSONObject();
             refundRequest.put("amount", amountInPaise);
             Refund refund = client.payments.refund(payment.getRazorpayPaymentId(), refundRequest);
+            String razorpayRefundId = refund.get("id").toString();
 
-            markRefunded(booking, refundAmount);
-            log.info("Deposit refunded: bookingId={}, razorpayRefundId={}, amount={}",
-                    booking.getId(), refund.get("id").toString(), refundAmount);
+            booking.setDepositStatus(DepositStatus.REFUND_INITIATED);
+            // Doubles as "amount attempted" until the webhook confirms it (mirrors the
+            // REFUND_FAILED usage below) — becomes "amount actually refunded" once
+            // handleRefundWebhookEvent() flips this to REFUNDED.
+            booking.setDepositRefundAmount(refundAmount);
+            booking.setDepositRazorpayRefundId(razorpayRefundId);
+            bookingRepository.save(booking);
+            log.info("Deposit refund initiated: bookingId={}, razorpayRefundId={}, amount={}",
+                    booking.getId(), razorpayRefundId, refundAmount);
         } catch (RazorpayException ex) {
             booking.setDepositStatus(DepositStatus.REFUND_FAILED);
             // Doubles as "amount attempted" on failure (vs. "amount actually
@@ -280,8 +312,49 @@ public class PaymentService {
             // without needing a separate column.
             booking.setDepositRefundAmount(refundAmount);
             bookingRepository.save(booking);
-            errorLogService.logServiceError(ex, "Booking", booking.getId(), booking.getCustomer().getId());
+            Long customerId = booking.getCustomer() != null ? booking.getCustomer().getId() : null;
+            errorLogService.logServiceError(ex, "Booking", booking.getId(), customerId);
             log.error("Deposit refund failed: bookingId={}, amount={}", booking.getId(), refundAmount, ex);
+        }
+    }
+
+    /**
+     * Applies a refund.processed / refund.failed webhook event, matched to a booking by
+     * the Razorpay refund id stored on it in refundDeposit(). Idempotent: Razorpay retries
+     * webhook deliveries that don't 2xx promptly, and a booking whose refund was already
+     * resolved (REFUNDED/REFUND_FAILED) — or that isn't in-flight at all, e.g. a stale/replayed
+     * event, or one for some other Razorpay refund entirely — is left untouched rather than
+     * re-applied or erroring. Called by RazorpayWebhookController.
+     */
+    @Transactional
+    public void handleRefundWebhookEvent(String razorpayRefundId, boolean processed) {
+        Booking booking = bookingRepository.lockByDepositRazorpayRefundId(razorpayRefundId).orElse(null);
+        if (booking == null) {
+            log.info("Refund webhook for unknown/unmatched refund id, ignoring: razorpayRefundId={}", razorpayRefundId);
+            return;
+        }
+        if (booking.getDepositStatus() != DepositStatus.REFUND_INITIATED) {
+            log.info("Refund webhook for a refund not awaiting confirmation, ignoring: bookingId={}, " +
+                    "razorpayRefundId={}, currentStatus={}", booking.getId(), razorpayRefundId, booking.getDepositStatus());
+            return;
+        }
+
+        if (processed) {
+            booking.setDepositStatus(DepositStatus.REFUNDED);
+            booking.setDepositRefundedAt(LocalDateTime.now());
+            bookingRepository.save(booking);
+            log.info("Deposit refund confirmed by webhook: bookingId={}, razorpayRefundId={}",
+                    booking.getId(), razorpayRefundId);
+            pushDepositResolvedNotification(booking);
+        } else {
+            booking.setDepositStatus(DepositStatus.REFUND_FAILED);
+            bookingRepository.save(booking);
+            Long customerId = booking.getCustomer() != null ? booking.getCustomer().getId() : null;
+            errorLogService.logServiceError(
+                    new RazorpayException("Refund failed per refund.failed webhook: " + razorpayRefundId),
+                    "Booking", booking.getId(), customerId);
+            log.error("Deposit refund failed per webhook: bookingId={}, razorpayRefundId={}",
+                    booking.getId(), razorpayRefundId);
         }
     }
 
@@ -292,13 +365,30 @@ public class PaymentService {
         bookingRepository.save(booking);
     }
 
+    private void pushDepositResolvedNotification(Booking booking) {
+        if (booking.getCustomer() == null) {
+            return;
+        }
+        try {
+            webPushService.sendToUser(booking.getCustomer().getId(), "Deposit resolved",
+                    "₹" + booking.getDepositRefundAmount() + " of your ₹" + booking.getSecurityDeposit()
+                            + " deposit has been refunded.", "/bookings");
+        } catch (Exception ex) {
+            log.warn("Failed to push deposit-resolved notification for bookingId={}", booking.getId(), ex);
+        }
+    }
+
     /**
      * Auto-refunds any completed booking's deposit that's still HELD (no claim
      * filed against it) once the grace period has passed — a customer's money
      * doesn't sit held indefinitely just because no one followed up. Called by
      * DepositReleaseTask.
+     * <p>
+     * Not itself @Transactional — each booking's refund runs in its own
+     * REQUIRES_NEW transaction (via the `self` proxy so the propagation
+     * actually takes effect, see the field-level comment on `self`), so one
+     * booking's failure can never roll back another's already-committed refund.
      */
-    @Transactional
     public void releaseUnclaimedDeposits(int graceHours) {
         LocalDateTime cutoff = LocalDateTime.now().minusHours(graceHours);
         List<Booking> eligible = bookingRepository.findAllByStatusAndDepositStatusAndActualReturnDatetimeBefore(
@@ -309,12 +399,12 @@ public class PaymentService {
         }
         log.info("Auto-releasing {} unclaimed deposit(s)", eligible.size());
         for (Booking booking : eligible) {
-            refundDeposit(booking, booking.getSecurityDeposit());
-            try {
-                webPushService.sendToUser(booking.getCustomer().getId(), "Deposit resolved",
-                        "Your deposit of ₹" + booking.getSecurityDeposit() + " has been refunded.", "/bookings");
-            } catch (Exception ex) {
-                log.warn("Failed to push deposit-auto-released notification for bookingId={}", booking.getId(), ex);
+            self.refundDeposit(booking, booking.getSecurityDeposit());
+            // Only mock/zero-amount/no-payment refunds land on REFUNDED synchronously; a real
+            // Razorpay refund is REFUND_INITIATED here and gets its own push later, once
+            // handleRefundWebhookEvent() confirms it — see pushDepositResolvedNotification.
+            if (booking.getDepositStatus() == DepositStatus.REFUNDED) {
+                pushDepositResolvedNotification(booking);
             }
         }
     }

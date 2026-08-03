@@ -19,6 +19,7 @@ import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.partner.entity.PartnerProfile;
 import com.puduvandi.partner.repository.PartnerProfileRepository;
 import com.puduvandi.push.service.WebPushService;
+import com.puduvandi.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -44,6 +45,7 @@ public class DeliveryService {
     private final UserRepository userRepository;
     private final PartnerProfileRepository partnerProfileRepository;
     private final WebPushService webPushService;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     @Transactional
     public void createDeliveryOrder(Booking booking, Bike bike, BigDecimal dropoffLat, BigDecimal dropoffLng) {
@@ -76,6 +78,20 @@ public class DeliveryService {
         } catch (Exception ex) {
             log.warn("Failed to push new-delivery-job notification", ex);
         }
+        realtimeEventPublisher.deliveryJobAvailable();
+    }
+
+    /** Notifies the booking's customer+owner (and the partner, once assigned) that this
+     *  delivery order's status changed, so their UI can silently re-fetch. */
+    private void publishDeliveryUpdate(DeliveryOrder order) {
+        try {
+            Booking booking = order.getBooking();
+            Long partnerUserId = order.getPartner() != null ? order.getPartner().getId() : null;
+            realtimeEventPublisher.deliveryUpdated(order.getId(), order.getStatus().name(),
+                    booking.getCustomer().getId(), booking.getOwner().getUser().getId(), partnerUserId);
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime delivery update for deliveryId={}", order.getId(), ex);
+        }
     }
 
     private DeliveryOrder buildOrder(Booking booking, DeliveryLegType legType,
@@ -103,6 +119,7 @@ public class DeliveryService {
             if (order.getStatus() == DeliveryStatus.PENDING || order.getStatus() == DeliveryStatus.CLAIMED) {
                 order.setStatus(DeliveryStatus.CANCELLED);
                 deliveryOrderRepository.save(order);
+                publishDeliveryUpdate(order);
             }
         });
     }
@@ -157,6 +174,7 @@ public class DeliveryService {
         order.setStatus(DeliveryStatus.CLAIMED);
         order.setClaimedAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
+        publishDeliveryUpdate(order);
 
         return toPartnerResponse(order);
     }
@@ -180,6 +198,7 @@ public class DeliveryService {
         order.setStatus(DeliveryStatus.PICKED_UP);
         order.setPickedUpAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
+        publishDeliveryUpdate(order);
 
         return toPartnerResponse(order);
     }
@@ -198,6 +217,7 @@ public class DeliveryService {
         order.setStatus(DeliveryStatus.DELIVERED);
         order.setDeliveredAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
+        publishDeliveryUpdate(order);
 
         return toPartnerResponse(order);
     }
@@ -227,6 +247,14 @@ public class DeliveryService {
         order.setPartnerCurrentLongitude(longitude);
         order.setPartnerLocationUpdatedAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
+
+        try {
+            Booking booking = order.getBooking();
+            realtimeEventPublisher.locationUpdated(booking.getId(),
+                    List.of(booking.getCustomer().getId(), booking.getOwner().getUser().getId()));
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime location update for deliveryId={}", deliveryId, ex);
+        }
     }
 
     // ===== Private helpers =====

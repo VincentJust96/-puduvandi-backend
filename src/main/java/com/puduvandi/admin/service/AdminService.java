@@ -17,6 +17,7 @@ import com.puduvandi.common.enums.*;
 import com.puduvandi.delivery.dto.DeliveryRateResponse;
 import com.puduvandi.delivery.dto.UpdateDeliveryRateRequest;
 import com.puduvandi.delivery.entity.DeliverySettings;
+import com.puduvandi.delivery.repository.DeliveryOrderRepository;
 import com.puduvandi.delivery.repository.DeliverySettingsRepository;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ConflictException;
@@ -33,7 +34,10 @@ import com.puduvandi.partner.dto.PartnerProfileResponse;
 import com.puduvandi.partner.entity.PartnerDocument;
 import com.puduvandi.partner.entity.PartnerProfile;
 import com.puduvandi.partner.repository.PartnerDocumentRepository;
+import com.puduvandi.audit.service.AdminAuditService;
 import com.puduvandi.partner.repository.PartnerProfileRepository;
+import com.puduvandi.realtime.RealtimeEventPublisher;
+import com.puduvandi.review.repository.ReviewRepository;
 import com.puduvandi.user.dto.PhoneChangeRequestResponse;
 import com.puduvandi.user.entity.PhoneChangeRequest;
 import com.puduvandi.user.entity.UserDocument;
@@ -41,6 +45,7 @@ import com.puduvandi.user.repository.PhoneChangeRequestRepository;
 import com.puduvandi.user.repository.UserDocumentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -49,6 +54,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Slf4j
@@ -67,10 +73,32 @@ public class AdminService {
     private final OwnerDocumentRepository ownerDocumentRepository;
     private final PhoneChangeRequestRepository phoneChangeRequestRepository;
     private final PartnerDocumentRepository partnerDocumentRepository;
+    private final ReviewRepository reviewRepository;
+    private final DeliveryOrderRepository deliveryOrderRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final RealtimeEventPublisher realtimeEventPublisher;
+    private final AdminAuditService adminAuditService;
 
-    /** PUDUVANDI_ENV values allowed to run the destructive local data reset. */
-    private static final Set<String> RESET_ALLOWED_ENVS = Set.of("", "local");
+    // Field injection (not a constructor param) so unit tests can set this
+    // directly without touching every other AdminService test's constructor
+    // call — mirrors the `self` field-injection pattern used elsewhere in
+    // this codebase. Spring resolves ${PUDUVANDI_ENV} from the OS environment
+    // like System.getenv() would, but through the testable property-resolution
+    // path instead of a static call.
+    @Value("${PUDUVANDI_ENV:}")
+    private String puduvandiEnv;
+
+    /**
+     * PUDUVANDI_ENV values allowed to run the destructive local data reset.
+     * Deliberately requires an EXPLICIT "local" — an unset/blank env var is
+     * fail-closed (disallowed), not treated as implicitly local. Every
+     * deployed environment for this project (including local dev, per
+     * project convention) sets PUDUVANDI_ENV explicitly, so there is no
+     * legitimate workflow that depends on the blank case — leaving it open
+     * would only mean a deployment that forgets to set the var gets this
+     * destructive endpoint enabled by accident.
+     */
+    private static final Set<String> RESET_ALLOWED_ENVS = Set.of("local");
     private static final String RESET_CONFIRMATION_PHRASE = "RESET_ALL_DATA";
 
     /**
@@ -78,7 +106,11 @@ public class AdminService {
      * constraints without relying solely on CASCADE. commission_settings and
      * delivery_settings are intentionally excluded — they're platform config,
      * not per-user test data. "users" is excluded here and handled separately
-     * so the seeded ADMIN account survives the reset.
+     * so the seeded ADMIN account survives the reset — which is exactly why
+     * phone_change_requests and push_subscriptions must be listed explicitly:
+     * their only FK target is users(id), so CASCADE (which only follows FKs
+     * from the tables named here) never reaches them, and the later
+     * DELETE FROM users would fail on the leftover rows.
      */
     private static final String RESET_TRUNCATE_SQL = """
             TRUNCATE TABLE
@@ -97,7 +129,9 @@ public class AdminService {
                 owner_profiles,
                 partner_profiles,
                 stored_files,
-                error_logs
+                error_logs,
+                phone_change_requests,
+                push_subscriptions
             RESTART IDENTITY CASCADE
             """;
 
@@ -139,9 +173,22 @@ public class AdminService {
         return userRepository.findAllForAdmin(role, status, pageable).map(this::toUserResponse);
     }
 
+    // Users who verified OTP/signed up but never finished picking CUSTOMER/OWNER
+    // (see AuthService.verifyOtp). Not real accounts yet, so they're excluded
+    // from listUsers()/findAllForAdmin and surfaced here for cleanup only —
+    // the only action offered on them in the admin UI is delete.
+    @Transactional(readOnly = true)
+    public Page<AdminUserResponse> listPendingSignups(int page, int size) {
+        PageRequest pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
+        return userRepository.findPendingSignups(pageable).map(this::toUserResponse);
+    }
+
     @Transactional
     public AdminUserResponse suspendUser(Long userId) {
         User user = findUser(userId);
+        if (user.getRole() == null) {
+            throw new BusinessException("This signup was never completed and has no role — delete it instead of suspending.");
+        }
         if (user.getRole() == UserRole.ADMIN || user.getRole() == UserRole.SUPER_ADMIN) {
             throw new BusinessException("Cannot suspend an admin account");
         }
@@ -151,6 +198,8 @@ public class AdminService {
         user.setStatus(UserStatus.SUSPENDED);
         User saved = userRepository.save(user);
         log.info("Admin suspended userId={}", userId);
+        adminAuditService.recordCurrentActor("SUSPEND_USER", "User", String.valueOf(userId),
+                Map.of("status", "ACTIVE"), Map.of("status", "SUSPENDED"));
         return toUserResponse(saved);
     }
 
@@ -175,11 +224,16 @@ public class AdminService {
         user.setEmail(null);
         userRepository.save(user);
         log.info("Admin soft-deleted userId={} (phone/email cleared for reuse)", userId);
+        adminAuditService.recordCurrentActor("DELETE_USER", "User", String.valueOf(userId),
+                Map.of("deleted", false), Map.of("deleted", true));
     }
 
     @Transactional
     public AdminUserResponse updateUser(Long userId, AdminUpdateUserRequest request) {
         User user = findUser(userId);
+        if (user.getRole() == null) {
+            throw new BusinessException("This signup was never completed and has no role — delete it instead of editing.");
+        }
         user.setFullName(request.fullName());
         user.setEmail(request.email());
         User saved = userRepository.save(user);
@@ -196,6 +250,8 @@ public class AdminService {
         user.setStatus(UserStatus.ACTIVE);
         User saved = userRepository.save(user);
         log.info("Admin unsuspended userId={}", userId);
+        adminAuditService.recordCurrentActor("UNSUSPEND_USER", "User", String.valueOf(userId),
+                Map.of("status", "SUSPENDED"), Map.of("status", "ACTIVE"));
         return toUserResponse(saved);
     }
 
@@ -219,6 +275,9 @@ public class AdminService {
         userRepository.save(user);
         cascadeOwnerDocumentStatus(owner, DocumentStatus.APPROVED);
         log.info("Admin approved KYC for ownerId={}", ownerId);
+        adminAuditService.recordCurrentActor("APPROVE_OWNER_KYC", "OwnerProfile", String.valueOf(ownerId),
+                Map.of("kycStatus", "PENDING"), Map.of("kycStatus", "APPROVED"));
+        publishKycUpdate(user);
         return toOwnerResponse(owner);
     }
 
@@ -233,6 +292,9 @@ public class AdminService {
         userRepository.save(user);
         cascadeOwnerDocumentStatus(owner, DocumentStatus.REJECTED);
         log.info("Admin rejected KYC for ownerId={}, reason={}", ownerId, reason);
+        adminAuditService.recordCurrentActor("REJECT_OWNER_KYC", "OwnerProfile", String.valueOf(ownerId),
+                Map.of("kycStatus", "PENDING"), Map.of("kycStatus", "REJECTED", "reason", reason));
+        publishKycUpdate(user);
         return toOwnerResponse(owner);
     }
 
@@ -301,6 +363,9 @@ public class AdminService {
         userRepository.save(user);
         cascadePartnerDocumentStatus(partner, DocumentStatus.APPROVED);
         log.info("Admin approved KYC for partnerId={}", partnerId);
+        adminAuditService.recordCurrentActor("APPROVE_PARTNER_KYC", "PartnerProfile", String.valueOf(partnerId),
+                Map.of("kycStatus", "PENDING"), Map.of("kycStatus", "APPROVED"));
+        publishKycUpdate(user);
         return toPartnerResponse(partner);
     }
 
@@ -315,6 +380,9 @@ public class AdminService {
         userRepository.save(user);
         cascadePartnerDocumentStatus(partner, DocumentStatus.REJECTED);
         log.info("Admin rejected KYC for partnerId={}, reason={}", partnerId, reason);
+        adminAuditService.recordCurrentActor("REJECT_PARTNER_KYC", "PartnerProfile", String.valueOf(partnerId),
+                Map.of("kycStatus", "PENDING"), Map.of("kycStatus", "REJECTED", "reason", reason));
+        publishKycUpdate(user);
         return toPartnerResponse(partner);
     }
 
@@ -351,6 +419,7 @@ public class AdminService {
     @Transactional
     public void deletePartner(Long partnerId) {
         PartnerProfile partner = findPartnerProfile(partnerId);
+        assertNoActiveDeliveries(partner.getUser().getId());
         partner.setDeleted(true);
         partnerProfileRepository.save(partner);
         log.info("Admin soft-deleted partnerId={}", partnerId);
@@ -361,7 +430,7 @@ public class AdminService {
     @Transactional(readOnly = true)
     public Page<BikeResponse> listBikes(BikeVerificationStatus verificationStatus, int page, int size) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
-        return bikeRepository.findAllForAdmin(verificationStatus, pageable).map(this::toBikeResponse);
+        return toBikeResponsePage(bikeRepository.findAllForAdmin(verificationStatus, pageable));
     }
 
     @Transactional
@@ -374,6 +443,9 @@ public class AdminService {
         bike.setStatus(BikeStatus.AVAILABLE);
         Bike saved = bikeRepository.save(bike);
         log.info("Admin approved bikeId={}", bikeId);
+        adminAuditService.recordCurrentActor("APPROVE_BIKE", "Bike", String.valueOf(bikeId),
+                Map.of("verificationStatus", "PENDING"), Map.of("verificationStatus", "APPROVED"));
+        publishBikeUpdate(saved);
         return toBikeResponse(saved);
     }
 
@@ -386,6 +458,9 @@ public class AdminService {
         bike.setVerificationStatus(BikeVerificationStatus.REJECTED);
         Bike saved = bikeRepository.save(bike);
         log.info("Admin rejected bikeId={}, reason={}", bikeId, reason);
+        adminAuditService.recordCurrentActor("REJECT_BIKE", "Bike", String.valueOf(bikeId),
+                Map.of("verificationStatus", "PENDING"), Map.of("verificationStatus", "REJECTED", "reason", reason));
+        publishBikeUpdate(saved);
         return toBikeResponse(saved);
     }
 
@@ -403,6 +478,17 @@ public class AdminService {
         bike.setTransmission(request.transmission());
         bike.setEngineCapacity(request.engineCapacity());
         bike.setHelmetIncluded(request.helmetIncluded());
+        // Null-guarded like latitude below: a client that omits these fields
+        // must not silently flip an existing true flag to false.
+        if (request.papersIncluded() != null) {
+            bike.setPapersIncluded(request.papersIncluded());
+        }
+        if (request.fuelIncluded() != null) {
+            bike.setFuelIncluded(request.fuelIncluded());
+        }
+        if (request.roadsideAssistance() != null) {
+            bike.setRoadsideAssistance(request.roadsideAssistance());
+        }
         bike.setPricePerHour(request.pricePerHour());
         bike.setPricePerDay(request.pricePerDay());
         bike.setSecurityDeposit(request.securityDeposit());
@@ -411,6 +497,10 @@ public class AdminService {
             bike.setLatitude(request.latitude());
             bike.setLongitude(request.longitude());
         }
+        bike.setRcDocumentUrl(request.rcDocumentUrl());
+        bike.setInsuranceDocumentUrl(request.insuranceDocumentUrl());
+        bike.setInsurancePolicyNumber(request.insurancePolicyNumber());
+        bike.setInsuranceExpiryDate(request.insuranceExpiryDate());
         bike.getImages().clear();
         addImages(bike, request.imageUrls());
         Bike saved = bikeRepository.save(bike);
@@ -574,10 +664,14 @@ public class AdminService {
         CommissionSettings settings = commissionSettingsRepository
                 .findTopByActiveTrueOrderByIdDesc()
                 .orElseThrow(() -> new ResourceNotFoundException("CommissionSettings", 1L));
+        var oldPercent = settings.getCommissionPercent();
         settings.setCommissionPercent(request.commissionPercent());
         settings.setUpdatedByAdmin(admin);
         CommissionSettings saved = commissionSettingsRepository.save(settings);
         log.info("Admin updated commission to {}% by adminId={}", request.commissionPercent(), adminUserId);
+        adminAuditService.record(adminUserId, admin.getRole() != null ? admin.getRole().name() : "ADMIN",
+                "UPDATE_COMMISSION", "CommissionSettings", String.valueOf(settings.getId()),
+                Map.of("commissionPercent", oldPercent), Map.of("commissionPercent", request.commissionPercent()));
         return toCommissionResponse(saved);
     }
 
@@ -587,6 +681,23 @@ public class AdminService {
         return userRepository.findById(userId)
                 .filter(u -> !u.isDeleted())
                 .orElseThrow(() -> new ResourceNotFoundException("User", userId));
+    }
+
+    private void publishKycUpdate(User user) {
+        try {
+            realtimeEventPublisher.kycUpdated(user.getId(), user.getKycStatus().name());
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime KYC update for userId={}", user.getId(), ex);
+        }
+    }
+
+    private void publishBikeUpdate(Bike bike) {
+        try {
+            realtimeEventPublisher.bikeUpdated(bike.getId(), bike.getOwner().getUser().getId(),
+                    bike.getVerificationStatus().name());
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime bike update for bikeId={}", bike.getId(), ex);
+        }
     }
 
     private OwnerProfile findOwnerProfile(Long ownerId) {
@@ -638,6 +749,16 @@ public class AdminService {
         if (activeBookings > 0) {
             throw new BusinessException(
                 "Cannot delete this owner: they have " + activeBookings + " active booking(s). "
+                + "Resolve or wait for these to complete/cancel first.");
+        }
+    }
+
+    private void assertNoActiveDeliveries(Long partnerUserId) {
+        long activeDeliveries = deliveryOrderRepository.countByPartnerIdAndStatusIn(
+                partnerUserId, List.of(DeliveryStatus.CLAIMED, DeliveryStatus.PICKED_UP));
+        if (activeDeliveries > 0) {
+            throw new BusinessException(
+                "Cannot delete this partner: they have " + activeDeliveries + " active delivery job(s) in progress. "
                 + "Resolve or wait for these to complete/cancel first.");
         }
     }
@@ -698,6 +819,36 @@ public class AdminService {
     }
 
     private BikeResponse toBikeResponse(Bike bike) {
+        long totalTrips = bookingRepository.countByBikeIdAndStatusAndDeletedFalse(
+                bike.getId(), BookingStatus.COMPLETED);
+        Double rating = reviewRepository.averageRatingForBike(bike.getId());
+        return toBikeResponse(bike, totalTrips, rating);
+    }
+
+    /**
+     * Batches the per-bike trip-count/rating lookups for an entire page into two queries
+     * total instead of one-per-bike — same N+1 fix as BikeService.toResponsePage.
+     */
+    private Page<BikeResponse> toBikeResponsePage(Page<Bike> bikes) {
+        List<Long> bikeIds = bikes.getContent().stream().map(Bike::getId).toList();
+        if (bikeIds.isEmpty()) {
+            return bikes.map(bike -> toBikeResponse(bike, 0L, null));
+        }
+
+        java.util.Map<Long, Long> tripCounts = bookingRepository
+                .countCompletedTripsForBikes(bikeIds, BookingStatus.COMPLETED).stream()
+                .collect(java.util.stream.Collectors.toMap(BookingRepository.BikeTripCount::getBikeId,
+                        BookingRepository.BikeTripCount::getTripCount));
+        java.util.Map<Long, Double> ratings = reviewRepository.averageRatingsForBikes(bikeIds).stream()
+                .collect(java.util.stream.Collectors.toMap(ReviewRepository.BikeAverageRating::getBikeId,
+                        ReviewRepository.BikeAverageRating::getAvgRating));
+
+        return bikes.map(bike -> toBikeResponse(bike,
+                tripCounts.getOrDefault(bike.getId(), 0L),
+                ratings.get(bike.getId())));
+    }
+
+    private BikeResponse toBikeResponse(Bike bike, long totalTrips, Double rating) {
         List<String> imageUrls = bike.getImages().stream()
                 .map(BikeImage::getImageUrl)
                 .toList();
@@ -715,6 +866,9 @@ public class AdminService {
                 bike.getTransmission(),
                 bike.getEngineCapacity(),
                 bike.isHelmetIncluded(),
+                bike.isPapersIncluded(),
+                bike.isFuelIncluded(),
+                bike.isRoadsideAssistance(),
                 bike.getPricePerHour(),
                 bike.getPricePerDay(),
                 bike.getSecurityDeposit(),
@@ -725,7 +879,17 @@ public class AdminService {
                 bike.getCreatedAt(),
                 bike.getLatitude(),
                 bike.getLongitude(),
-                bike.getArea()
+                bike.getArea(),
+                totalTrips,
+                rating,
+                bike.getRcDocumentUrl(),
+                bike.getInsuranceDocumentUrl(),
+                bike.getInsurancePolicyNumber(),
+                bike.getInsuranceExpiryDate(),
+                // Unlike BikeService's mapper (customer/owner-facing, always null here),
+                // admin is allowed to see the real password so they can open an
+                // encrypted insurance PDF themselves.
+                bike.getInsuranceDocumentPassword()
         );
     }
 
@@ -767,7 +931,13 @@ public class AdminService {
                         .map(UserDocument::getDocumentUrl)
                         .orElse(null),
                 booking.getDepositStatus(),
-                booking.getDepositRefundAmount()
+                booking.getDepositRefundAmount(),
+                // Admin views don't need the customer's "have I rated this?" flag.
+                false,
+                booking.getBike().getRcDocumentUrl(),
+                booking.getBike().getInsuranceDocumentUrl(),
+                booking.getBike().getInsurancePolicyNumber(),
+                booking.getBike().getInsuranceExpiryDate()
         );
     }
 
@@ -816,18 +986,50 @@ public class AdminService {
         );
     }
 
+    // ===== REVIEW MODERATION =====
+
+    @Transactional(readOnly = true)
+    public Page<AdminReviewResponse> listReviews(int page, int size) {
+        PageRequest pageable = PageRequest.of(page, size);
+        return reviewRepository.findAllByOrderByCreatedAtDesc(pageable).map(this::toReviewResponse);
+    }
+
+    /** Removes an abusive/fake review. Hard delete (no soft-delete concept on reviews) — the
+     *  customer is then free to submit a fresh one for the same booking if that's warranted. */
+    @Transactional
+    public void deleteReview(Long reviewId) {
+        com.puduvandi.review.entity.Review review = reviewRepository.findById(reviewId)
+                .orElseThrow(() -> new ResourceNotFoundException("Review", reviewId));
+        reviewRepository.delete(review);
+        log.info("Admin deleted reviewId={} (bookingId={})", reviewId, review.getBooking().getId());
+    }
+
+    private AdminReviewResponse toReviewResponse(com.puduvandi.review.entity.Review r) {
+        return new AdminReviewResponse(
+                r.getId(),
+                r.getBooking().getId(),
+                r.getBike().getId(),
+                r.getBike().getBrand() + " " + r.getBike().getModel(),
+                r.getCustomer().getId(),
+                r.getCustomer().getFullName(),
+                r.getRating(),
+                r.getComment(),
+                r.getCreatedAt()
+        );
+    }
+
     // ===== LOCAL DATA RESET (DANGER — dev/test only) =====
 
     /**
      * Wipes every owner, customer, partner, bike, booking and related row,
      * leaving only ADMIN/SUPER_ADMIN users behind. Refuses to run unless PUDUVANDI_ENV is
-     * unset or "local" — never staging/production — and requires the caller
+     * exactly "local" (never unset, staging, or production) — and requires the caller
      * to echo back {@value #RESET_CONFIRMATION_PHRASE} to guard against an
      * accidental click/replay.
      */
     @Transactional
     public AdminDataResetResponse resetLocalData(String confirmationPhrase) {
-        String env = System.getenv("PUDUVANDI_ENV");
+        String env = puduvandiEnv;
         String normalizedEnv = env == null ? "" : env.trim().toLowerCase();
 
         if (!RESET_ALLOWED_ENVS.contains(normalizedEnv)) {
