@@ -1,0 +1,25 @@
+name: Keep backend alive
+
+# Render's free tier spins the container down after ~15 min with no
+# incoming traffic. A cold container takes long enough to wake back up
+# that things like OTP delivery visibly stall for whoever triggered it.
+# Pinging on a shorter interval than that keeps it warm.
+#
+# Deliberately hits /api/v1/health, not a DB-backed endpoint: that route
+# does no database work, so this doesn't defeat Neon's own autosuspend
+# (see the "Fix Neon autosuspend never firing" commit / application.yml's
+# hikari.minimum-idle comment) or burn its free-tier compute-hour quota.
+#
+# GitHub Actions cron can run a few minutes late under load, so 12 is a
+# safety margin under Render's 15-minute idle window, not a promise.
+on:
+  schedule:
+    - cron: "*/12 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: curl -fsS --max-time 20 https://puduvandi-backend.onrender.com/api/v1/health

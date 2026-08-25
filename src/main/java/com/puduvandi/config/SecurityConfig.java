@@ -69,6 +69,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/v1/bikes/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/files/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/push/vapid-public-key").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/v1/health").permitAll()
                 // Razorpay calls this server-to-server with no bearer token — authenticity is
                 // verified inside RazorpayWebhookController via X-Razorpay-Signature instead.
                 .requestMatchers(HttpMethod.POST, "/api/v1/webhooks/razorpay").permitAll()
