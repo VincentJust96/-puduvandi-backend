@@ -23,7 +23,11 @@ spring:
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 10
-      minimum-idle: 5
+      # 0, not a fixed count: Neon's free-tier autosuspend only fires when the
+      # pool holds zero physical connections. A nonzero minimum-idle keeps that
+      # many connections permanently open, which pins the Neon compute "active"
+      # 24/7 and burns the monthly compute-hour quota even with no real traffic.
+      minimum-idle: 0
       connection-timeout: 20000
       idle-timeout: 300000
       max-lifetime: 1200000
