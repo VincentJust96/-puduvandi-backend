@@ -451,12 +451,15 @@ public class TripExpenseService {
                 .orElseThrow(() -> new ForbiddenException("You are not a member of this trip."));
     }
 
-    /** Backfills the user link on any trip invite sitting pending under this phone number. */
+    /** Backfills the user link on any trip invite sitting pending under this phone number, and swaps the placeholder phone-number displayName for their real name. */
     private void linkPendingMemberships(User user) {
         if (user.getPhoneNumber() == null) return;
         List<TripMember> pending = tripMemberRepository.findByUserIsNullAndPhoneNumber(user.getPhoneNumber());
         if (pending.isEmpty()) return;
-        for (TripMember m : pending) m.setUser(user);
+        for (TripMember m : pending) {
+            m.setUser(user);
+            m.setDisplayName(displayNameFor(user));
+        }
         tripMemberRepository.saveAll(pending);
     }
 
