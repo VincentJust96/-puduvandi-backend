@@ -17,8 +17,6 @@ name: Keep backend alive
 # branch — this must stay in sync on both develop and main, not just
 # whichever branch happens to get feature work.
 on:
-  schedule:
-    - cron: "*/12 * * * *"
   workflow_dispatch: {}
 
 jobs:
