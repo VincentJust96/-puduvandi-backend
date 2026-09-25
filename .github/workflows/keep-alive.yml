@@ -12,9 +12,11 @@ name: Keep backend alive
 #
 # GitHub Actions cron can run a few minutes late under load, so 12 is a
 # safety margin under Render's 15-minute idle window, not a promise.
+#
+# schedule triggers only fire from workflow files on the repo's default
+# branch — this must stay in sync on both develop and main, not just
+# whichever branch happens to get feature work.
 on:
-  schedule:
-    - cron: "*/12 * * * *"
   workflow_dispatch: {}
 
 jobs:
