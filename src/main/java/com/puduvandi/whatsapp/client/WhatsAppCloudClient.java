@@ -8,9 +8,11 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Talks to the WhatsApp Business Cloud API (POST /{phone-number-id}/messages).
@@ -25,6 +27,7 @@ public class WhatsAppCloudClient implements WhatsAppClient {
 
     private final RestClient restClient;
     private final String messagesPath;
+    private final String apiVersion;
 
     public WhatsAppCloudClient(WhatsAppProperties props) {
         this.restClient = RestClient.builder()
@@ -32,6 +35,7 @@ public class WhatsAppCloudClient implements WhatsAppClient {
                 .defaultHeader("Authorization", "Bearer " + props.getAccessToken())
                 .build();
         this.messagesPath = "/" + props.getApiVersion() + "/" + props.getPhoneNumberId() + "/messages";
+        this.apiVersion = props.getApiVersion();
     }
 
     @Override
@@ -78,6 +82,27 @@ public class WhatsAppCloudClient implements WhatsAppClient {
                 "button", clip(buttonLabel, 20),
                 "sections", List.of(Map.of("title", clip(sectionTitle, 24), "rows", rowMaps))));
         return post(interactive(waId, interactive)) != null;
+    }
+
+    /** Two steps: GET /{media-id} for a short-lived URL, then GET that URL (same bearer token). */
+    @Override
+    public Optional<Media> downloadMedia(String mediaId, long maxBytes) {
+        try {
+            JsonNode info = restClient.get().uri("/" + apiVersion + "/{id}", mediaId).retrieve().body(JsonNode.class);
+            String url = info == null ? null : info.path("url").asText(null);
+            if (url == null || info.path("file_size").asLong(0) > maxBytes) {
+                log.warn("WhatsApp media not downloaded: mediaId={}, reason={}", mediaId, url == null ? "no url" : "too large");
+                return Optional.empty();
+            }
+            byte[] content = restClient.get().uri(URI.create(url)).retrieve().body(byte[].class);
+            if (content == null || content.length == 0 || content.length > maxBytes) {
+                return Optional.empty();
+            }
+            return Optional.of(new Media(content, info.path("mime_type").asText(null)));
+        } catch (Exception ex) {
+            log.error("WhatsApp media download failed: mediaId={}, error={}", mediaId, ex.getMessage());
+            return Optional.empty();
+        }
     }
 
     // ===== Internal =====

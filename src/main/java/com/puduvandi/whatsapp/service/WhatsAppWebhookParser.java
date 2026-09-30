@@ -47,7 +47,15 @@ public class WhatsAppWebhookParser {
                                 interactive.path("button_reply").path("id").asText(null),
                                 interactive.path("list_reply").path("id").asText(null));
                     }
-                    result.add(new InboundMessage(from, id, type, text, replyId));
+                    // Photos arrive as "image"; a photo sent as a file (or a PDF) as "document"
+                    JsonNode media = message.path(type);
+                    String mediaId = null;
+                    String mediaMimeType = null;
+                    if (("image".equals(type) || "document".equals(type)) && media.isObject()) {
+                        mediaId = media.path("id").asText(null);
+                        mediaMimeType = media.path("mime_type").asText(null);
+                    }
+                    result.add(new InboundMessage(from, id, type, text, replyId, mediaId, mediaMimeType));
                 }
             }
         }

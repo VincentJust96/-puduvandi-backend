@@ -85,6 +85,24 @@ class WhatsAppWebhookSecurityTest {
     }
 
     @Test
+    @DisplayName("parses photos and files: media id + MIME type")
+    void parsesMedia() {
+        String body = """
+            {"entry":[{"changes":[{"value":{"messages":[
+              {"from":"919876543210","id":"wamid.4","type":"image","image":{"id":"media-1","mime_type":"image/jpeg"}},
+              {"from":"919876543210","id":"wamid.5","type":"document",
+               "document":{"id":"media-2","mime_type":"application/pdf","filename":"dl.pdf"}},
+              {"from":"919876543210","id":"wamid.6","type":"text","text":{"body":"hi"}}
+            ]}}]}]}
+            """;
+        List<InboundMessage> messages = new WhatsAppWebhookParser(new ObjectMapper()).parse(body);
+
+        assertThat(messages).extracting(InboundMessage::mediaId).containsExactly("media-1", "media-2", null);
+        assertThat(messages).extracting(InboundMessage::mediaMimeType).containsExactly("image/jpeg", "application/pdf", null);
+        assertThat(messages.get(2).hasMedia()).isFalse();
+    }
+
+    @Test
     @DisplayName("garbage JSON yields no messages instead of throwing")
     void garbage() {
         assertThat(new WhatsAppWebhookParser(new ObjectMapper()).parse("not json")).isEmpty();

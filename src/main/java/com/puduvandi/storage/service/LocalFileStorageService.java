@@ -14,7 +14,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.MalformedURLException;
 import java.nio.file.*;
 import java.util.UUID;
@@ -35,9 +37,28 @@ public class LocalFileStorageService implements FileStorageService {
         if (file.isEmpty()) {
             throw new BusinessException("Cannot store an empty file.");
         }
+        return store(file::getInputStream, file.getOriginalFilename(), file.getContentType(), file.getSize(),
+                uploadedByUserId, category);
+    }
 
-        String originalFilename = StringUtils.cleanPath(
-                file.getOriginalFilename() != null ? file.getOriginalFilename() : "file");
+    @Override
+    @Transactional
+    public StoredFile store(byte[] content, String originalFilename, String contentType,
+                            Long uploadedByUserId, String category) {
+        if (content == null || content.length == 0) {
+            throw new BusinessException("Cannot store an empty file.");
+        }
+        return store(() -> new ByteArrayInputStream(content), originalFilename, contentType, content.length,
+                uploadedByUserId, category);
+    }
+
+    private interface ContentSource {
+        InputStream open() throws IOException;
+    }
+
+    private StoredFile store(ContentSource source, String rawFilename, String contentType, long size,
+                             Long uploadedByUserId, String category) {
+        String originalFilename = StringUtils.cleanPath(rawFilename != null ? rawFilename : "file");
 
         // Reject path traversal attempts in the original filename
         if (originalFilename.contains("..")) {
@@ -51,7 +72,9 @@ public class LocalFileStorageService implements FileStorageService {
         try {
             Files.createDirectories(uploadPath);
             Path targetPath = uploadPath.resolve(storedFilename);
-            Files.copy(file.getInputStream(), targetPath, StandardCopyOption.REPLACE_EXISTING);
+            try (InputStream in = source.open()) {
+                Files.copy(in, targetPath, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException ex) {
             throw new BusinessException("Failed to store file: " + ex.getMessage());
         }
@@ -59,11 +82,11 @@ public class LocalFileStorageService implements FileStorageService {
         // Save metadata — fileUrl is set after the first save so we have the id
         StoredFile storedFile = StoredFile.builder()
                 .originalFilename(originalFilename)
-                .contentType(file.getContentType() != null ? file.getContentType() : "application/octet-stream")
+                .contentType(contentType != null ? contentType : "application/octet-stream")
                 .storagePath(storedFilename)
                 .category(category)
                 .uploadedByUserId(uploadedByUserId)
-                .fileSize(file.getSize())
+                .fileSize(size)
                 .build();
 
         StoredFile saved = storedFileRepository.save(storedFile);

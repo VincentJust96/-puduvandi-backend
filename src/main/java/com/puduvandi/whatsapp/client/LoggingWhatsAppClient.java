@@ -4,12 +4,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Used while puduvandi.whatsapp.enabled=false (local/dev): prints each outgoing message to
  * the console instead of sending it. Buttons and list rows show their reply id, which is
- * what a dev-mode test sends back as the "tap".
+ * what a dev-mode test sends back as the "tap". Media "downloads" return a 1x1 placeholder
+ * PNG, so a dev-mode test can send any media id as a licence photo.
  */
 @Slf4j
 @Component
@@ -48,6 +51,15 @@ public class LoggingWhatsAppClient implements WhatsAppClient {
         print(waId, body, options.toString());
         return false;
     }
+
+    @Override
+    public Optional<Media> downloadMedia(String mediaId, long maxBytes) {
+        log.info("[whatsapp] media {} not downloaded (channel disabled) — using a placeholder image", mediaId);
+        return Optional.of(new Media(PLACEHOLDER_PNG, "image/png"));
+    }
+
+    private static final byte[] PLACEHOLDER_PNG = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
 
     private static void print(String waId, String body, String options) {
         log.info("[whatsapp → {}] (not sent — channel disabled)\n{}{}", waId, body, options);

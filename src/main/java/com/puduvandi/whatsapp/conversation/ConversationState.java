@@ -8,5 +8,7 @@ public enum ConversationState {
     ASKING_FROM,
     ASKING_TO,
     CHOOSING_BIKE,
-    CONFIRMING
+    CONFIRMING,
+    /** Booking confirmed but no driving licence on file yet — waiting for a photo of it. */
+    AWAITING_LICENCE
 }

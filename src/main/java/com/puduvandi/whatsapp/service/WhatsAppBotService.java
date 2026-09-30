@@ -10,15 +10,22 @@ import com.puduvandi.booking.dto.PriceEstimateResponse;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DocumentType;
 import com.puduvandi.common.enums.KycStatus;
 import com.puduvandi.common.enums.UserRole;
 import com.puduvandi.common.enums.UserStatus;
 import com.puduvandi.config.RazorpayConfig;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ResourceNotFoundException;
+import com.puduvandi.storage.entity.StoredFile;
+import com.puduvandi.storage.service.FileStorageService;
+import com.puduvandi.user.dto.UploadDocumentRequest;
+import com.puduvandi.user.repository.UserDocumentRepository;
+import com.puduvandi.user.service.UserService;
 import com.puduvandi.whatsapp.client.WhatsAppClient;
 import com.puduvandi.whatsapp.client.WhatsAppClient.Button;
 import com.puduvandi.whatsapp.client.WhatsAppClient.ListRow;
+import com.puduvandi.whatsapp.client.WhatsAppClient.Media;
 import com.puduvandi.whatsapp.config.WhatsAppProperties;
 import com.puduvandi.whatsapp.conversation.ConversationState;
 import com.puduvandi.whatsapp.conversation.WhatsAppSession;
@@ -34,12 +41,13 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 /**
  * The booking conversation, one customer message at a time:
- * location → hours/days → from → to → bike → confirm → booking (+ payment link).
+ * location → hours/days → from → to → bike → confirm → [licence photo, if none on file] → booking (+ payment link).
  * <p>
  * Deliberately NOT @Transactional as a whole: BookingService.createBooking has its own
  * transaction, and a BusinessException thrown inside a shared one would mark it
@@ -61,6 +69,10 @@ public class WhatsAppBotService {
     private static final Set<String> RESTART_WORDS = Set.of("hi", "hello", "hey", "hii", "menu", "start", "restart", "book");
     private static final Set<String> CANCEL_WORDS = Set.of("cancel", "stop", "exit", "quit");
 
+    private static final long MAX_LICENCE_BYTES = 10L * 1024 * 1024;
+    private static final Map<String, String> LICENCE_TYPES = Map.of(
+            "image/jpeg", "jpg", "image/png", "png", "image/webp", "webp", "application/pdf", "pdf");
+
     private final WhatsAppSessionRepository sessionRepository;
     private final WhatsAppClient client;
     private final WhatsAppProperties properties;
@@ -70,6 +82,9 @@ public class WhatsAppBotService {
     private final UserRepository userRepository;
     private final RazorpayConfig razorpayConfig;
     private final PaymentLinkService paymentLinkService;
+    private final UserDocumentRepository userDocumentRepository;
+    private final FileStorageService fileStorageService;
+    private final UserService userService;
 
     public void handle(InboundMessage message) {
         String waId = message.from();
@@ -83,7 +98,7 @@ public class WhatsAppBotService {
         String input = message.input();
         String keyword = input.toLowerCase();
 
-        if (!isSupported(message)) {
+        if (!isSupported(message, session.getState())) {
             client.sendText(waId, "Sorry, I can only read text and button taps 🙏 Send HI to start booking.");
             sessionRepository.save(session);
             return;
@@ -106,6 +121,7 @@ public class WhatsAppBotService {
             case ASKING_TO -> onTo(session, input);
             case CHOOSING_BIKE -> onBike(session, input);
             case CONFIRMING -> onConfirm(session, keyword);
+            case AWAITING_LICENCE -> onLicence(session, message);
             default -> startBooking(session);
         }
     }
@@ -282,6 +298,15 @@ public class WhatsAppBotService {
     private void book(WhatsAppSession session) {
         try {
             User customer = findOrCreateCustomer(session.getWaId());
+            if (!hasLicence(customer)) {
+                session.setState(ConversationState.AWAITING_LICENCE);
+                sessionRepository.save(session);
+                client.sendText(session.getWaId(),
+                        "🪪 One last step: we need your driving licence.\n"
+                                + "Please send a clear photo of it here (front side, all text readable).\n"
+                                + "Type CANCEL to stop.");
+                return;
+            }
             BookingResponse booking = bookingService.createBooking(customer.getId(),
                     new CreateBookingRequest(session.getBikeId(), session.getPickupDatetime(),
                             session.getReturnDatetime(), "SELF_PICKUP", null, null));
@@ -301,14 +326,44 @@ public class WhatsAppBotService {
         } catch (BusinessException | ResourceNotFoundException ex) {
             session.reset();
             sessionRepository.save(session);
-            String hint = ex.getMessage() != null && ex.getMessage().toLowerCase().contains("driving licence")
-                    ? "\nUpload it on " + properties.getWebsiteUrl() + " and then send HI to book again."
-                    : "\nSend HI to start again.";
-            client.sendText(session.getWaId(), ex.getMessage() + hint);
+            client.sendText(session.getWaId(), ex.getMessage() + "\nSend HI to start again.");
         }
     }
 
+    /** The licence photo: store it like a website upload would, then carry on with the booking. */
+    private void onLicence(WhatsAppSession session, InboundMessage message) {
+        String mimeType = message.mediaMimeType() == null ? null
+                : message.mediaMimeType().split(";")[0].trim().toLowerCase();
+        String extension = mimeType == null ? null : LICENCE_TYPES.get(mimeType);
+        if (!message.hasMedia() || extension == null) {
+            client.sendText(session.getWaId(),
+                    "Please send a *photo* of your driving licence 📷 (JPG, PNG or PDF). Type CANCEL to stop.");
+            return;
+        }
+        Optional<Media> media = client.downloadMedia(message.mediaId(), MAX_LICENCE_BYTES);
+        if (media.isEmpty()) {
+            client.sendText(session.getWaId(),
+                    "Sorry, I couldn't get that file 😕 Please send the photo again (under 10 MB).");
+            return;
+        }
+        User customer = findOrCreateCustomer(session.getWaId());
+        StoredFile stored = fileStorageService.store(media.get().content(), "whatsapp-licence." + extension,
+                mimeType, customer.getId(), "USER_DOCUMENT");
+        userService.uploadDocument(customer.getId(),
+                new UploadDocumentRequest(DocumentType.DRIVING_LICENSE, stored.getFileUrl()));
+        log.info("Driving licence received via WhatsApp: userId={}, fileId={}", customer.getId(), stored.getId());
+
+        client.sendText(session.getWaId(), "✅ Licence received, thank you! Booking your bike now…");
+        book(session);
+    }
+
     // ===== Helpers =====
+
+    private boolean hasLicence(User customer) {
+        return userDocumentRepository
+                .findByUserIdAndDocumentTypeAndDeletedFalse(customer.getId(), DocumentType.DRIVING_LICENSE)
+                .isPresent();
+    }
 
     private void sendSummary(WhatsAppSession session) {
         PriceEstimateResponse estimate = bookingService.estimatePrice(
@@ -399,7 +454,9 @@ public class WhatsAppBotService {
         }
     }
 
-    private static boolean isSupported(InboundMessage message) {
-        return "text".equals(message.type()) || ("interactive".equals(message.type()) && message.replyId() != null);
+    private static boolean isSupported(InboundMessage message, ConversationState state) {
+        return "text".equals(message.type())
+                || ("interactive".equals(message.type()) && message.replyId() != null)
+                || (state == ConversationState.AWAITING_LICENCE && message.hasMedia());
     }
 }

@@ -1,5 +1,6 @@
 package com.puduvandi.storage.controller;
 
+import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.common.dto.ApiResponse;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
@@ -32,6 +33,7 @@ public class FileController {
 
     private final FileStorageService fileStorageService;
     private final StoredFileRepository storedFileRepository;
+    private final BookingRepository bookingRepository;
 
     /** Categories that contain sensitive KYC/licence documents — never publicly downloadable. */
     private static final Set<String> RESTRICTED_CATEGORIES = Set.of("OWNER_DOCUMENT", "USER_DOCUMENT");
@@ -92,8 +94,14 @@ public class FileController {
         boolean isOwnerOfFile = principal.getUserId() != null
                 && principal.getUserId().equals(storedFile.getUploadedByUserId());
         boolean isAdmin = "ADMIN".equals(principal.getRole());
+        // A bike owner reviews the licence of customers who booked with them (see BookingService)
+        boolean isOwnerOfCustomersBooking = "USER_DOCUMENT".equals(storedFile.getCategory())
+                && "OWNER".equals(principal.getRole())
+                && storedFile.getUploadedByUserId() != null
+                && bookingRepository.existsByOwner_User_IdAndCustomer_IdAndDeletedFalse(
+                        principal.getUserId(), storedFile.getUploadedByUserId());
 
-        if (!isOwnerOfFile && !isAdmin) {
+        if (!isOwnerOfFile && !isAdmin && !isOwnerOfCustomersBooking) {
             throw new ForbiddenException("You do not have permission to access this file.");
         }
     }

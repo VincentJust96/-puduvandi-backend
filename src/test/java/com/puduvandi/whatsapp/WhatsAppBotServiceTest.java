@@ -10,11 +10,19 @@ import com.puduvandi.booking.dto.PriceEstimateResponse;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DocumentType;
 import com.puduvandi.common.enums.UserRole;
 import com.puduvandi.common.enums.UserStatus;
 import com.puduvandi.config.RazorpayConfig;
 import com.puduvandi.exception.BusinessException;
+import com.puduvandi.storage.entity.StoredFile;
+import com.puduvandi.storage.service.FileStorageService;
+import com.puduvandi.user.dto.UploadDocumentRequest;
+import com.puduvandi.user.entity.UserDocument;
+import com.puduvandi.user.repository.UserDocumentRepository;
+import com.puduvandi.user.service.UserService;
 import com.puduvandi.whatsapp.client.WhatsAppClient;
+import com.puduvandi.whatsapp.client.WhatsAppClient.Media;
 import com.puduvandi.whatsapp.config.WhatsAppProperties;
 import com.puduvandi.whatsapp.conversation.ConversationState;
 import com.puduvandi.whatsapp.conversation.WhatsAppSession;
@@ -54,6 +62,9 @@ class WhatsAppBotServiceTest {
     @Mock private BookingService bookingService;
     @Mock private UserRepository userRepository;
     @Mock private PaymentLinkService paymentLinkService;
+    @Mock private UserDocumentRepository userDocumentRepository;
+    @Mock private FileStorageService fileStorageService;
+    @Mock private UserService userService;
 
     private WhatsAppProperties properties;
     private RazorpayConfig razorpayConfig;
@@ -65,7 +76,7 @@ class WhatsAppBotServiceTest {
         properties = new WhatsAppProperties();
         razorpayConfig = new RazorpayConfig();
         bot = new WhatsAppBotService(sessionRepository, client, properties, bikeRepository,
-                bookingRepository, bookingService, userRepository, razorpayConfig, paymentLinkService);
+                bookingRepository, bookingService, userRepository, razorpayConfig, paymentLinkService, userDocumentRepository, fileStorageService, userService);
         session = new WhatsAppSession(WA_ID);
         lenient().when(sessionRepository.findByWaId(WA_ID)).thenAnswer(inv -> Optional.of(session));
         session.setId(1L);
@@ -85,6 +96,29 @@ class WhatsAppBotServiceTest {
                 .securityDeposit(new BigDecimal("500")).build();
         b.setId(id);
         return b;
+    }
+
+    private void licenceOnFile(boolean present) {
+        when(userDocumentRepository.findByUserIdAndDocumentTypeAndDeletedFalse(42L, DocumentType.DRIVING_LICENSE))
+                .thenReturn(present ? Optional.of(UserDocument.builder().build()) : Optional.empty());
+    }
+
+    /** A chat that has reached "Book now", for customer 42. */
+    private void readyToConfirm() {
+        session.setLastInteractionAt(LocalDateTime.now());
+        session.setState(ConversationState.CONFIRMING);
+        session.setArea("Pondy");
+        session.setBikeId(7L);
+        session.setPickupDatetime(LocalDateTime.now().plusDays(1));
+        session.setReturnDatetime(LocalDateTime.now().plusDays(2));
+        User customer = User.builder().phoneNumber("9876543210").role(UserRole.CUSTOMER)
+                .status(UserStatus.ACTIVE).deleted(false).build();
+        customer.setId(42L);
+        lenient().when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210")).thenReturn(Optional.of(customer));
+    }
+
+    private void sendPhoto(String type, String mimeType) {
+        bot.handle(new InboundMessage(WA_ID, "wamid." + System.nanoTime(), type, null, null, "media-1", mimeType));
     }
 
     @Test
@@ -134,6 +168,7 @@ class WhatsAppBotServiceTest {
                 .status(UserStatus.ACTIVE).deleted(false).build();
         customer.setId(42L);
         when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210")).thenReturn(Optional.of(customer));
+        licenceOnFile(true);
         BookingResponse booking = mock(BookingResponse.class);
         when(booking.status()).thenReturn(BookingStatus.PAYMENT_PENDING);
         when(booking.id()).thenReturn(99L);
@@ -153,7 +188,7 @@ class WhatsAppBotServiceTest {
     }
 
     @Test
-    @DisplayName("a booking rule failure (e.g. no licence) is told to the customer and resets the chat")
+    @DisplayName("a booking rule failure (e.g. bike just taken) is told to the customer and resets the chat")
     void businessFailure() {
         session.setLastInteractionAt(LocalDateTime.now());
         session.setState(ConversationState.CONFIRMING);
@@ -164,12 +199,13 @@ class WhatsAppBotServiceTest {
                 .status(UserStatus.ACTIVE).deleted(false).build();
         customer.setId(42L);
         when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210")).thenReturn(Optional.of(customer));
+        licenceOnFile(true);
         when(bookingService.createBooking(eq(42L), any()))
-                .thenThrow(new BusinessException("Please upload your driving licence before booking."));
+                .thenThrow(new BusinessException("Bike is not available for the selected dates."));
 
         tap("confirm:yes");
 
-        verify(client).sendText(eq(WA_ID), contains("driving licence"));
+        verify(client).sendText(eq(WA_ID), contains("not available"));
         assertThat(session.getState()).isEqualTo(ConversationState.START);
     }
 
@@ -222,5 +258,78 @@ class WhatsAppBotServiceTest {
 
         verify(client).sendText(eq(WA_ID), contains("only read text"));
         assertThat(session.getState()).isEqualTo(ConversationState.ASKING_TO);
+    }
+
+    @Test
+    @DisplayName("no licence on file: 'Book now' asks for a photo instead of booking")
+    void asksForLicence() {
+        readyToConfirm();
+        licenceOnFile(false);
+
+        tap("confirm:yes");
+
+        assertThat(session.getState()).isEqualTo(ConversationState.AWAITING_LICENCE);
+        assertThat(session.getBikeId()).isEqualTo(7L);
+        verify(client).sendText(eq(WA_ID), contains("photo"));
+        verify(bookingService, never()).createBooking(any(), any());
+    }
+
+    @Test
+    @DisplayName("licence photo is stored privately, saved as the licence, and the booking goes through")
+    void licencePhotoCompletesBooking() {
+        readyToConfirm();
+        session.setState(ConversationState.AWAITING_LICENCE);
+        when(client.downloadMedia(eq("media-1"), anyLong()))
+                .thenReturn(Optional.of(new Media(new byte[]{1, 2, 3}, "image/jpeg")));
+        StoredFile stored = StoredFile.builder().fileUrl("/api/v1/files/55").build();
+        when(fileStorageService.store(any(byte[].class), eq("whatsapp-licence.jpg"), eq("image/jpeg"), eq(42L), eq("USER_DOCUMENT")))
+                .thenReturn(stored);
+        licenceOnFile(true); // what book() sees after the upload
+        BookingResponse booking = mock(BookingResponse.class);
+        when(booking.status()).thenReturn(BookingStatus.PAYMENT_PENDING);
+        when(booking.id()).thenReturn(99L);
+        when(booking.bookingReference()).thenReturn("PV-0001");
+        when(booking.totalAmount()).thenReturn(new BigDecimal("1300"));
+        when(bookingService.createBooking(eq(42L), any())).thenReturn(booking);
+        when(paymentLinkService.createLink(99L)).thenReturn("http://localhost:8080/api/v1/pay/5.nonce.sig");
+
+        sendPhoto("image", "image/jpeg");
+
+        ArgumentCaptor<UploadDocumentRequest> doc = ArgumentCaptor.forClass(UploadDocumentRequest.class);
+        verify(userService).uploadDocument(eq(42L), doc.capture());
+        assertThat(doc.getValue().documentType()).isEqualTo(DocumentType.DRIVING_LICENSE);
+        assertThat(doc.getValue().documentUrl()).isEqualTo("/api/v1/files/55");
+        verify(client).sendText(eq(WA_ID), contains("Licence received"));
+        verify(client).sendText(eq(WA_ID), contains("/api/v1/pay/5.nonce.sig"));
+        assertThat(session.getState()).isEqualTo(ConversationState.START);
+    }
+
+    @Test
+    @DisplayName("while waiting for the licence, text or a wrong file type asks again")
+    void licenceWrongInput() {
+        readyToConfirm();
+        session.setState(ConversationState.AWAITING_LICENCE);
+
+        say("here it is");
+        sendPhoto("document", "application/zip");
+
+        verify(client, times(2)).sendText(eq(WA_ID), contains("photo"));
+        verify(client, never()).downloadMedia(any(), anyLong());
+        verifyNoInteractions(fileStorageService, userService);
+        assertThat(session.getState()).isEqualTo(ConversationState.AWAITING_LICENCE);
+    }
+
+    @Test
+    @DisplayName("a failed download asks for the photo again and stores nothing")
+    void licenceDownloadFails() {
+        readyToConfirm();
+        session.setState(ConversationState.AWAITING_LICENCE);
+        when(client.downloadMedia(eq("media-1"), anyLong())).thenReturn(Optional.empty());
+
+        sendPhoto("image", "image/png");
+
+        verify(client).sendText(eq(WA_ID), contains("couldn't get that file"));
+        verifyNoInteractions(fileStorageService, userService);
+        assertThat(session.getState()).isEqualTo(ConversationState.AWAITING_LICENCE);
     }
 }
