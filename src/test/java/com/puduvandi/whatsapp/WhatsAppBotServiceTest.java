@@ -1,0 +1,222 @@
+package com.puduvandi.whatsapp;
+
+import com.puduvandi.auth.entity.User;
+import com.puduvandi.auth.repository.UserRepository;
+import com.puduvandi.bike.entity.Bike;
+import com.puduvandi.bike.repository.BikeRepository;
+import com.puduvandi.booking.dto.BookingResponse;
+import com.puduvandi.booking.dto.CreateBookingRequest;
+import com.puduvandi.booking.dto.PriceEstimateResponse;
+import com.puduvandi.booking.repository.BookingRepository;
+import com.puduvandi.booking.service.BookingService;
+import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.UserRole;
+import com.puduvandi.common.enums.UserStatus;
+import com.puduvandi.config.RazorpayConfig;
+import com.puduvandi.exception.BusinessException;
+import com.puduvandi.whatsapp.client.WhatsAppClient;
+import com.puduvandi.whatsapp.config.WhatsAppProperties;
+import com.puduvandi.whatsapp.conversation.ConversationState;
+import com.puduvandi.whatsapp.conversation.WhatsAppSession;
+import com.puduvandi.whatsapp.conversation.WhatsAppSessionRepository;
+import com.puduvandi.whatsapp.service.InboundMessage;
+import com.puduvandi.whatsapp.service.WhatsAppBotService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+@DisplayName("WhatsAppBotService conversation flow")
+class WhatsAppBotServiceTest {
+
+    private static final String WA_ID = "919876543210";
+
+    @Mock private WhatsAppSessionRepository sessionRepository;
+    @Mock private WhatsAppClient client;
+    @Mock private BikeRepository bikeRepository;
+    @Mock private BookingRepository bookingRepository;
+    @Mock private BookingService bookingService;
+    @Mock private UserRepository userRepository;
+
+    private WhatsAppProperties properties;
+    private RazorpayConfig razorpayConfig;
+    private WhatsAppBotService bot;
+    private WhatsAppSession session;
+
+    @BeforeEach
+    void setUp() {
+        properties = new WhatsAppProperties();
+        razorpayConfig = new RazorpayConfig();
+        bot = new WhatsAppBotService(sessionRepository, client, properties, bikeRepository,
+                bookingRepository, bookingService, userRepository, razorpayConfig);
+        session = new WhatsAppSession(WA_ID);
+        lenient().when(sessionRepository.findByWaId(WA_ID)).thenAnswer(inv -> Optional.of(session));
+        session.setId(1L);
+    }
+
+    private void say(String text) {
+        bot.handle(new InboundMessage(WA_ID, "wamid." + System.nanoTime(), "text", text, null));
+    }
+
+    private void tap(String replyId) {
+        bot.handle(new InboundMessage(WA_ID, "wamid." + System.nanoTime(), "interactive", null, replyId));
+    }
+
+    private Bike bike(long id) {
+        Bike b = Bike.builder().brand("Honda").model("Activa").area("Pondy")
+                .pricePerHour(new BigDecimal("50")).pricePerDay(new BigDecimal("400"))
+                .securityDeposit(new BigDecimal("500")).build();
+        b.setId(id);
+        return b;
+    }
+
+    @Test
+    @DisplayName("first message greets and shows the location list")
+    void greeting() {
+        session.setId(null);
+        session.setLastInteractionAt(LocalDateTime.now());
+        when(bikeRepository.findAvailableAreas()).thenReturn(List.of("Pondy", "Auroville"));
+
+        say("hello");
+
+        assertThat(session.getState()).isEqualTo(ConversationState.CHOOSING_LOCATION);
+        verify(client).sendList(eq(WA_ID), contains("Where"), anyString(), anyString(), argThat(rows -> rows.size() == 2));
+    }
+
+    @Test
+    @DisplayName("happy path: location → days → dates → bike → confirm creates the booking and sends the pay link")
+    void happyPath() {
+        session.setLastInteractionAt(LocalDateTime.now());
+        session.setState(ConversationState.CHOOSING_LOCATION);
+        when(bikeRepository.findAvailableAreas()).thenReturn(List.of("Pondy"));
+        tap("area:Pondy");
+        assertThat(session.getState()).isEqualTo(ConversationState.CHOOSING_MODE);
+
+        tap("mode:DAY");
+        assertThat(session.getState()).isEqualTo(ConversationState.ASKING_FROM);
+
+        say(LocalDate.now().plusDays(3).format(java.time.format.DateTimeFormatter.ofPattern("dd-MM-yyyy")));
+        assertThat(session.getState()).isEqualTo(ConversationState.ASKING_TO);
+
+        when(bikeRepository.browseAvailableBikes(any(), any(), eq("Pondy"), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(bike(7))));
+        when(bookingRepository.existsOverlappingBooking(eq(7L), any(), any())).thenReturn(false);
+
+        say("2");
+        assertThat(session.getState()).isEqualTo(ConversationState.CHOOSING_BIKE);
+        assertThat(session.getReturnDatetime()).isEqualTo(session.getPickupDatetime().plusDays(2));
+
+        when(bookingService.estimatePrice(eq(7L), any(), any())).thenReturn(new PriceEstimateResponse(
+                7L, "Honda", "Activa", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.ONE,
+                new BigDecimal("800"), new BigDecimal("500"), new BigDecimal("1300"),
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO));
+        tap("bike:7");
+        assertThat(session.getState()).isEqualTo(ConversationState.CONFIRMING);
+
+        User customer = User.builder().phoneNumber("9876543210").role(UserRole.CUSTOMER)
+                .status(UserStatus.ACTIVE).deleted(false).build();
+        customer.setId(42L);
+        when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210")).thenReturn(Optional.of(customer));
+        BookingResponse booking = mock(BookingResponse.class);
+        when(booking.status()).thenReturn(BookingStatus.PAYMENT_PENDING);
+        when(booking.bookingReference()).thenReturn("PV-0001");
+        when(booking.totalAmount()).thenReturn(new BigDecimal("1300.00"));
+        when(bookingService.createBooking(eq(42L), any(CreateBookingRequest.class))).thenReturn(booking);
+
+        tap("confirm:yes");
+
+        ArgumentCaptor<CreateBookingRequest> request = ArgumentCaptor.forClass(CreateBookingRequest.class);
+        verify(bookingService).createBooking(eq(42L), request.capture());
+        assertThat(request.getValue().bikeId()).isEqualTo(7L);
+        assertThat(request.getValue().deliveryType()).isEqualTo("SELF_PICKUP");
+        verify(client).sendText(eq(WA_ID), contains("https://puduvandi.com/pay/PV-0001"));
+        assertThat(session.getState()).isEqualTo(ConversationState.START);
+    }
+
+    @Test
+    @DisplayName("a booking rule failure (e.g. no licence) is told to the customer and resets the chat")
+    void businessFailure() {
+        session.setLastInteractionAt(LocalDateTime.now());
+        session.setState(ConversationState.CONFIRMING);
+        session.setBikeId(7L);
+        session.setPickupDatetime(LocalDateTime.now().plusDays(1));
+        session.setReturnDatetime(LocalDateTime.now().plusDays(2));
+        User customer = User.builder().phoneNumber("9876543210").role(UserRole.CUSTOMER)
+                .status(UserStatus.ACTIVE).deleted(false).build();
+        customer.setId(42L);
+        when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210")).thenReturn(Optional.of(customer));
+        when(bookingService.createBooking(eq(42L), any()))
+                .thenThrow(new BusinessException("Please upload your driving licence before booking."));
+
+        tap("confirm:yes");
+
+        verify(client).sendText(eq(WA_ID), contains("driving licence"));
+        assertThat(session.getState()).isEqualTo(ConversationState.START);
+    }
+
+    @Test
+    @DisplayName("bad date input keeps the step and asks again")
+    void badDate() {
+        session.setLastInteractionAt(LocalDateTime.now());
+        session.setState(ConversationState.ASKING_FROM);
+        session.setRentalMode("DAY");
+
+        say("next friday");
+
+        assertThat(session.getState()).isEqualTo(ConversationState.ASKING_FROM);
+        verify(client).sendText(eq(WA_ID), contains("couldn't read"));
+    }
+
+    @Test
+    @DisplayName("an expired session restarts from the greeting")
+    void expiredSessionRestarts() {
+        session.setState(ConversationState.CONFIRMING);
+        session.setLastInteractionAt(LocalDateTime.now().minusHours(3));
+        when(bikeRepository.findAvailableAreas()).thenReturn(List.of("Pondy"));
+
+        say("yes");
+
+        assertThat(session.getState()).isEqualTo(ConversationState.CHOOSING_LOCATION);
+        verify(bookingService, never()).createBooking(any(), any());
+    }
+
+    @Test
+    @DisplayName("'cancel' clears the session")
+    void cancelResets() {
+        session.setLastInteractionAt(LocalDateTime.now());
+        session.setState(ConversationState.ASKING_TO);
+        session.setArea("Pondy");
+
+        say("cancel");
+
+        assertThat(session.getState()).isEqualTo(ConversationState.START);
+        assertThat(session.getArea()).isNull();
+    }
+
+    @Test
+    @DisplayName("images and other unsupported messages get a polite nudge")
+    void unsupportedType() {
+        session.setLastInteractionAt(LocalDateTime.now());
+        session.setState(ConversationState.ASKING_TO);
+
+        bot.handle(new InboundMessage(WA_ID, "wamid.img", "image", null, null));
+
+        verify(client).sendText(eq(WA_ID), contains("only read text"));
+        assertThat(session.getState()).isEqualTo(ConversationState.ASKING_TO);
+    }
+}

@@ -5,6 +5,7 @@ import com.puduvandi.common.enums.NotificationType;
 import com.puduvandi.errorlog.service.ErrorLogService;
 import com.puduvandi.notification.entity.NotificationLog;
 import com.puduvandi.notification.repository.NotificationLogRepository;
+import com.puduvandi.whatsapp.client.WhatsAppClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -15,13 +16,13 @@ import java.util.List;
 
 /**
  * Records every SMS/WhatsApp message the platform attempts to send to
- * notification_logs, and would dispatch it via an SMS/WhatsApp provider.
+ * notification_logs, and dispatches it.
  * <p>
- * No provider is wired in right now (Twilio was removed — its free tier
- * didn't cover the actual use case; a replacement provider is TBD). Until
- * one is plugged into {@link #attemptSend}, every send is logged as FAILED
- * with a clear reason and never retried, so booking/handover flows keep
- * working exactly as if messaging were a real, currently-down channel.
+ * WhatsApp goes through the WhatsApp Business Cloud API when
+ * puduvandi.whatsapp.enabled=true. There is still no SMS provider (Twilio was
+ * removed), so SMS — and WhatsApp while the channel is disabled — is logged as
+ * FAILED with a clear reason and never retried, so booking/handover flows keep
+ * working exactly as if that channel were a real, currently-down one.
  * Never throws — failures are logged (to notification_logs and error_logs)
  * and swallowed so a messaging outage can never break booking/ride flows.
  */
@@ -36,6 +37,7 @@ public class NotificationService {
 
     private final NotificationLogRepository notificationLogRepository;
     private final ErrorLogService errorLogService;
+    private final WhatsAppClient whatsAppClient;
 
     @Transactional
     public void sendSMS(Long bookingId, String customerPhone, String messageContent) {
@@ -125,6 +127,23 @@ public class NotificationService {
      */
     private void attemptSend(NotificationLog notificationLog, String toPhone, String messageContent,
                               boolean whatsapp) {
+        if (whatsapp && whatsAppClient.isEnabled()) {
+            // Cloud API wants digits only (919876543210), not "+91…"
+            String wamid = whatsAppClient.sendText(toPhone.replace("+", ""), messageContent);
+            if (wamid != null) {
+                notificationLog.setStatus(NotificationStatus.SENT);
+                notificationLog.setProviderMessageId(wamid);
+                notificationLog.setSentAt(LocalDateTime.now());
+                notificationLogRepository.save(notificationLog);
+            } else {
+                // Retried by NotificationRetryTask (up to MAX_RETRIES)
+                notificationLog.setStatus(NotificationStatus.FAILED);
+                notificationLog.setErrorMessage("WhatsApp Cloud API send failed — see application log.");
+                notificationLogRepository.save(notificationLog);
+            }
+            return;
+        }
+
         log.warn("{} not sent (no provider configured): bookingId={}, phone={}, message=\"{}\"",
                 whatsapp ? "WhatsApp" : "SMS", notificationLog.getBookingId(), toPhone, messageContent);
 
