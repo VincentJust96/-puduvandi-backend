@@ -80,6 +80,9 @@ puduvandi:
     # Off by default: the bot endpoint is not exposed and outbound messages are only logged.
     # All four secrets come from the deployment environment — never commit real values.
     enabled: ${WHATSAPP_ENABLED:false}
+    # Local testing only: webhook on without Meta — unsigned POSTs from localhost, replies printed
+    # to the console. Refuses to start together with enabled=true.
+    dev-mode: ${WHATSAPP_DEV_MODE:false}
     phone-number-id: ${WHATSAPP_PHONE_NUMBER_ID:}
     access-token: ${WHATSAPP_ACCESS_TOKEN:}
     app-secret: ${WHATSAPP_APP_SECRET:}

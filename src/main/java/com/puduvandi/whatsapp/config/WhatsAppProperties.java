@@ -18,6 +18,13 @@ public class WhatsAppProperties {
     /** false = bot endpoints are off and outbound messages are only logged. */
     private boolean enabled = false;
 
+    /**
+     * Local testing without Meta: the webhook stays on but accepts unsigned requests from
+     * localhost only, and every reply is printed to the console instead of sent.
+     * Must never be switched on together with {@link #enabled}.
+     */
+    private boolean devMode = false;
+
     /** Meta "Phone number ID" of the Puduvandi WhatsApp Business number. */
     private String phoneNumberId;
 
