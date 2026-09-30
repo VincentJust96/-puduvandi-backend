@@ -1,8 +1,9 @@
 -- ============================================================
--- V28__create_whatsapp_tables.sql
+-- V52__create_whatsapp_tables.sql
 -- WhatsApp booking bot: per-phone conversation state, and a
 -- de-duplication table for inbound webhook messages (Meta may
 -- deliver the same message more than once).
+-- (V52, not V28: develop already uses V28–V51.)
 -- ============================================================
 
 CREATE TABLE whatsapp_sessions (
