@@ -21,4 +21,7 @@ public class RazorpayConfig {
     private String keySecret;
     private boolean mockEnabled = true;
     private int paymentExpiryMinutes = 15;
+
+    /** Separate secret configured in the Razorpay dashboard's webhook settings — not the API key secret. */
+    private String webhookSecret;
 }

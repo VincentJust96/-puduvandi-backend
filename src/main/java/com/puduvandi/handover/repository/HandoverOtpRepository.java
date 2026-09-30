@@ -2,7 +2,9 @@ package com.puduvandi.handover.repository;
 
 import com.puduvandi.common.enums.HandoverPurpose;
 import com.puduvandi.handover.entity.HandoverOtp;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -28,6 +30,25 @@ public interface HandoverOtpRepository extends JpaRepository<HandoverOtp, Long> 
         LIMIT 1
         """)
     Optional<HandoverOtp> findLatestActive(@Param("bookingId") Long bookingId,
+                                            @Param("purpose") HandoverPurpose purpose,
+                                            @Param("now") LocalDateTime now);
+
+    /**
+     * Same as findLatestActive but row-locked — used by verify() so two
+     * near-simultaneous correct-code verify calls can't both pass validation
+     * and both double-fire the handover's state transition.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+        SELECT h FROM HandoverOtp h
+        WHERE h.bookingId = :bookingId
+          AND h.purpose = :purpose
+          AND h.used = false
+          AND h.expiresAt > :now
+        ORDER BY h.createdAt DESC
+        LIMIT 1
+        """)
+    Optional<HandoverOtp> lockLatestActive(@Param("bookingId") Long bookingId,
                                             @Param("purpose") HandoverPurpose purpose,
                                             @Param("now") LocalDateTime now);
 }

@@ -1,5 +1,6 @@
 package com.puduvandi.delivery.repository;
 
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 import com.puduvandi.delivery.entity.DeliveryOrder;
 import jakarta.persistence.LockModeType;
@@ -15,11 +16,17 @@ import java.util.Optional;
 @Repository
 public interface DeliveryOrderRepository extends JpaRepository<DeliveryOrder, Long> {
 
-    Optional<DeliveryOrder> findByBookingId(Long bookingId);
+    Optional<DeliveryOrder> findByBookingIdAndLegType(Long bookingId, DeliveryLegType legType);
 
     List<DeliveryOrder> findByStatusOrderByCreatedAtAsc(DeliveryStatus status);
 
     List<DeliveryOrder> findByPartnerIdOrderByCreatedAtDesc(Long partnerId);
+
+    long countByPartnerIdAndStatusIn(Long partnerId, List<DeliveryStatus> statuses);
+
+    /** Most recently assigned partner for a booking (covers whichever leg — outbound or return —
+     *  currently has one claimed), used to CC the partner on realtime booking-status pushes. */
+    Optional<DeliveryOrder> findFirstByBooking_IdAndPartnerIsNotNullOrderByIdDesc(Long bookingId);
 
     /**
      * Acquires a row-level pessimistic write lock on the delivery order, serializing

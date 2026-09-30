@@ -1,6 +1,7 @@
 package com.puduvandi.delivery.controller;
 
 import com.puduvandi.common.dto.ApiResponse;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.delivery.dto.DeliveryRateResponse;
 import com.puduvandi.delivery.dto.DeliveryResponse;
 import com.puduvandi.delivery.service.DeliveryService;
@@ -32,12 +33,12 @@ public class DeliveryController {
     @GetMapping("/api/v1/bookings/{id}/delivery")
     @PreAuthorize("hasAnyRole('OWNER', 'CUSTOMER')")
     @SecurityRequirement(name = "bearerAuth")
-    @Operation(summary = "View the partner delivery status for a booking")
+    @Operation(summary = "View the outbound partner delivery status for a booking")
     public ResponseEntity<ApiResponse<DeliveryResponse>> getBookingDelivery(
             @AuthenticationPrincipal PuduvandiUserPrincipal principal,
             @PathVariable Long id) {
 
-        DeliveryResponse response = deliveryService.getDeliveryForBooking(id, principal.getUserId());
+        DeliveryResponse response = deliveryService.getDeliveryForBooking(id, DeliveryLegType.OUTBOUND, principal.getUserId());
         return ResponseEntity.ok(ApiResponse.success("Delivery fetched", response));
     }
 }

@@ -5,6 +5,7 @@ import com.puduvandi.auth.entity.User;
 import com.puduvandi.auth.repository.OtpRecordRepository;
 import com.puduvandi.auth.repository.UserRepository;
 import com.puduvandi.common.enums.DocumentStatus;
+import com.puduvandi.common.enums.NotificationPurpose;
 import com.puduvandi.config.OtpProperties;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ConflictException;
@@ -194,7 +195,11 @@ public class UserService {
     // ===== Private Helpers =====
 
     private void ensurePhoneNotTaken(String phoneNumber) {
-        if (userRepository.existsByPhoneNumber(phoneNumber)) {
+        // Deleted-blind existsByPhoneNumber would permanently block this number
+        // once its previous owner is soft-deleted, since phone_number is globally
+        // unique but not partial — see [[project-softdelete-unique-constraint]].
+        // A soft-deleted account no longer functionally exists, so its number is free.
+        if (userRepository.existsByPhoneNumberAndDeletedFalse(phoneNumber)) {
             throw new ConflictException("This phone number is already linked to another account.");
         }
     }
@@ -222,7 +227,8 @@ public class UserService {
         } else {
             notificationService.sendSMS(null, phoneNumber,
                     "Your Puduvandi verification code is " + otp + ". Valid for "
-                            + otpProperties.getExpiryMinutes() + " minutes. Do not share this with anyone.");
+                            + otpProperties.getExpiryMinutes() + " minutes. Do not share this with anyone.",
+                    NotificationPurpose.OTP);
         }
     }
 

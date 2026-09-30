@@ -4,6 +4,7 @@ import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.booking.repository.BookingRepository;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryType;
 import com.puduvandi.common.enums.HandoverPurpose;
 import com.puduvandi.delivery.entity.DeliveryOrder;
@@ -14,6 +15,7 @@ import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.handover.dto.HandoverOtpResponse;
 import com.puduvandi.handover.dto.HandoverVerifyResponse;
 import com.puduvandi.handover.entity.HandoverOtp;
+import com.puduvandi.handover.repository.BikeConditionReviewRepository;
 import com.puduvandi.handover.repository.HandoverOtpRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -50,6 +52,7 @@ public class HandoverOtpService {
     private final DeliveryOrderRepository deliveryOrderRepository;
     private final BookingService bookingService;
     private final DeliveryService deliveryService;
+    private final BikeConditionReviewRepository conditionReviewRepository;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -60,6 +63,7 @@ public class HandoverOtpService {
         validateDeliveryTypeCompatible(booking, purpose);
         validateBookingStateForPurpose(booking, purpose);
         validatePaymentComplete(booking, purpose);
+        validateConditionReviewFiled(booking, purpose);
 
         Long expectedGeneratorId = generatorExpectedUserId(booking, purpose);
         if (!expectedGeneratorId.equals(requestingUserId)) {
@@ -105,7 +109,7 @@ public class HandoverOtpService {
         }
 
         HandoverOtp otp = handoverOtpRepository
-                .findLatestActive(bookingId, purpose, LocalDateTime.now())
+                .lockLatestActive(bookingId, purpose, LocalDateTime.now())
                 .orElseThrow(() -> new BusinessException(
                         "No active OTP found for this handover step. Please generate a new one."));
 
@@ -144,15 +148,17 @@ public class HandoverOtpService {
         Long bookingId = booking.getId();
         switch (purpose) {
             case PICKUP_SELF -> bookingService.transitionToRideStarted(bookingId);
-            case PICKUP_PARTNER -> deliveryService.transitionToPickedUp(requireDeliveryOrder(bookingId).getId());
+            case PICKUP_PARTNER -> deliveryService.transitionToPickedUp(
+                    requireDeliveryOrder(bookingId, DeliveryLegType.OUTBOUND).getId());
             case RECEIVE_PARTNER -> {
-                deliveryService.transitionToDelivered(requireDeliveryOrder(bookingId).getId());
+                deliveryService.transitionToDelivered(requireDeliveryOrder(bookingId, DeliveryLegType.OUTBOUND).getId());
                 bookingService.transitionToRideStarted(bookingId);
             }
             case RETURN_SELF -> bookingService.completeBooking(bookingId);
-            case RETURN_TO_PARTNER -> deliveryService.transitionToReturnCollected(requireDeliveryOrder(bookingId).getId());
+            case RETURN_TO_PARTNER -> deliveryService.transitionToPickedUp(
+                    requireDeliveryOrder(bookingId, DeliveryLegType.RETURN).getId());
             case RETURN_FINAL -> {
-                deliveryService.transitionToReturnCompleted(requireDeliveryOrder(bookingId).getId());
+                deliveryService.transitionToDelivered(requireDeliveryOrder(bookingId, DeliveryLegType.RETURN).getId());
                 bookingService.completeBooking(bookingId);
             }
         }
@@ -163,7 +169,7 @@ public class HandoverOtpService {
     private Long generatorExpectedUserId(Booking booking, HandoverPurpose purpose) {
         return switch (purpose) {
             case PICKUP_SELF, RECEIVE_PARTNER, RETURN_TO_PARTNER -> booking.getCustomer().getId();
-            case PICKUP_PARTNER -> claimedPartnerId(booking.getId());
+            case PICKUP_PARTNER -> claimedPartnerId(booking.getId(), DeliveryLegType.OUTBOUND);
             case RETURN_SELF, RETURN_FINAL -> booking.getOwner().getUser().getId();
         };
     }
@@ -172,14 +178,17 @@ public class HandoverOtpService {
         return switch (purpose) {
             case PICKUP_SELF, PICKUP_PARTNER -> booking.getOwner().getUser().getId();
             case RETURN_SELF -> booking.getCustomer().getId();
-            case RECEIVE_PARTNER, RETURN_TO_PARTNER, RETURN_FINAL -> claimedPartnerId(booking.getId());
+            case RECEIVE_PARTNER -> claimedPartnerId(booking.getId(), DeliveryLegType.OUTBOUND);
+            case RETURN_TO_PARTNER, RETURN_FINAL -> claimedPartnerId(booking.getId(), DeliveryLegType.RETURN);
         };
     }
 
-    private Long claimedPartnerId(Long bookingId) {
-        DeliveryOrder order = requireDeliveryOrder(bookingId);
+    private Long claimedPartnerId(Long bookingId, DeliveryLegType legType) {
+        DeliveryOrder order = requireDeliveryOrder(bookingId, legType);
         if (order.getPartner() == null) {
-            throw new BusinessException("No delivery partner has claimed this booking yet.");
+            throw new BusinessException(legType == DeliveryLegType.RETURN
+                    ? "No delivery partner has claimed this return job yet."
+                    : "No delivery partner has claimed this booking yet.");
         }
         return order.getPartner().getId();
     }
@@ -201,7 +210,7 @@ public class HandoverOtpService {
             case PICKUP_SELF, RECEIVE_PARTNER -> requireBookingStatus(booking, BookingStatus.CONFIRMED);
             case PICKUP_PARTNER -> {
                 requireBookingStatus(booking, BookingStatus.CONFIRMED);
-                claimedPartnerId(booking.getId()); // throws if not yet claimed
+                claimedPartnerId(booking.getId(), DeliveryLegType.OUTBOUND); // throws if not yet claimed
             }
             case RETURN_SELF, RETURN_TO_PARTNER, RETURN_FINAL -> requireBookingStatus(booking, BookingStatus.RETURN_REQUESTED);
         }
@@ -227,6 +236,25 @@ public class HandoverOtpService {
         }
     }
 
+    /**
+     * The customer must file a pre-pickup bike condition review (photos, fuel
+     * level, odometer) before their pickup OTP can be generated — gives the
+     * owner a timestamped baseline to check against for any later damage
+     * dispute. Only applies to the two pickup purposes the customer
+     * generates (PICKUP_PARTNER's OTP is generated by the delivery partner,
+     * who never sees the bike itself, so it's not applicable there).
+     */
+    private void validateConditionReviewFiled(Booking booking, HandoverPurpose purpose) {
+        boolean requiresReview = switch (purpose) {
+            case PICKUP_SELF, RECEIVE_PARTNER -> true;
+            case PICKUP_PARTNER, RETURN_SELF, RETURN_TO_PARTNER, RETURN_FINAL -> false;
+        };
+        if (requiresReview && !conditionReviewRepository.existsByBookingId(booking.getId())) {
+            throw new BusinessException(
+                    "Please complete the bike condition review before generating a pickup OTP.");
+        }
+    }
+
     private void requireBookingStatus(Booking booking, BookingStatus required) {
         if (booking.getStatus() != required) {
             throw new BusinessException(
@@ -240,8 +268,8 @@ public class HandoverOtpService {
                 .orElseThrow(() -> new ResourceNotFoundException("Booking", bookingId));
     }
 
-    private DeliveryOrder requireDeliveryOrder(Long bookingId) {
-        return deliveryOrderRepository.findByBookingId(bookingId)
+    private DeliveryOrder requireDeliveryOrder(Long bookingId, DeliveryLegType legType) {
+        return deliveryOrderRepository.findByBookingIdAndLegType(bookingId, legType)
                 .orElseThrow(() -> new ResourceNotFoundException("DeliveryOrder for booking", bookingId));
     }
 

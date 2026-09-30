@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Delivery partner profile + KYC, mirroring OwnerService's profile/document flow.
@@ -84,7 +85,10 @@ public class PartnerProfileService {
 
         // Uploading a KYC document — not merely filling in vehicle/city
         // details — is what actually puts the partner up for admin review.
-        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED) {
+        // Also re-queues a previously REJECTED partner: without this, rejectPartnerKyc
+        // leaving kycStatus=REJECTED forever would give the partner no way back onto
+        // the review queue even after fixing the documents that got them rejected.
+        if (user.getKycStatus() == KycStatus.NOT_SUBMITTED || user.getKycStatus() == KycStatus.REJECTED) {
             user.setKycStatus(KycStatus.PENDING);
             userRepository.save(user);
         }
@@ -119,15 +123,27 @@ public class PartnerProfileService {
     }
 
     private PartnerProfile findOrCreatePartnerProfile(User user) {
-        return partnerProfileRepository.findByUserIdAndDeletedFalse(user.getId())
-                .orElseGet(() -> {
-                    PartnerProfile profile = PartnerProfile.builder()
-                            .user(user)
-                            .totalDeliveries(0)
-                            .deleted(false)
-                            .build();
-                    return partnerProfileRepository.save(profile);
-                });
+        Optional<PartnerProfile> existing = partnerProfileRepository.findByUserId(user.getId());
+        if (existing.isPresent()) {
+            PartnerProfile profile = existing.get();
+            if (profile.isDeleted()) {
+                // partner_profiles.user_id is globally unique, so a soft-deleted profile
+                // must be reactivated here rather than inserting a new one (would violate
+                // the unique constraint) — see [[project-softdelete-unique-constraint]].
+                profile.setDeleted(false);
+                profile.setTotalDeliveries(0);
+                profile = partnerProfileRepository.save(profile);
+                log.info("Soft-deleted partner profile reactivated: userId={}", user.getId());
+            }
+            return profile;
+        }
+
+        PartnerProfile profile = PartnerProfile.builder()
+                .user(user)
+                .totalDeliveries(0)
+                .deleted(false)
+                .build();
+        return partnerProfileRepository.save(profile);
     }
 
     private PartnerProfileResponse toResponse(User user, PartnerProfile profile) {

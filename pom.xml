@@ -24,6 +24,8 @@
         <jjwt.version>0.12.5</jjwt.version>
         <bucket4j.version>8.10.1</bucket4j.version>
         <razorpay.version>1.4.8</razorpay.version>
+        <webpush.version>5.1.1</webpush.version>
+        <pdfbox.version>3.0.3</pdfbox.version>
     </properties>
 
     <dependencies>
@@ -116,6 +118,26 @@
             <groupId>com.razorpay</groupId>
             <artifactId>razorpay-java</artifactId>
             <version>${razorpay.version}</version>
+        </dependency>
+
+        <!-- ===== Web Push (VAPID) for browser push notifications ===== -->
+        <dependency>
+            <groupId>nl.martijndwars</groupId>
+            <artifactId>web-push</artifactId>
+            <version>${webpush.version}</version>
+        </dependency>
+        <!-- web-push's EC/VAPID crypto needs BouncyCastle at runtime, but doesn't declare it. -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
+
+        <!-- ===== PDFBox — text extraction for insurance-document auto-fill ===== -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>${pdfbox.version}</version>
         </dependency>
 
         <!-- ===== Testing ===== -->

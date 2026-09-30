@@ -1,14 +1,18 @@
 package com.puduvandi.storage.controller;
 
 import com.puduvandi.common.dto.ApiResponse;
+import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.exception.UnauthorizedException;
 import com.puduvandi.security.PuduvandiUserPrincipal;
 import com.puduvandi.storage.dto.FileUploadResponse;
+import com.puduvandi.storage.dto.InsuranceAnalyzeRequest;
+import com.puduvandi.storage.dto.InsuranceDetailsResponse;
 import com.puduvandi.storage.entity.StoredFile;
 import com.puduvandi.storage.repository.StoredFileRepository;
 import com.puduvandi.storage.service.FileStorageService;
+import com.puduvandi.storage.service.InsuranceDocumentParser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -22,6 +26,9 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Set;
 
 @RestController
@@ -32,6 +39,7 @@ public class FileController {
 
     private final FileStorageService fileStorageService;
     private final StoredFileRepository storedFileRepository;
+    private final InsuranceDocumentParser insuranceDocumentParser;
 
     /** Categories that contain sensitive KYC/licence documents — never publicly downloadable. */
     private static final Set<String> RESTRICTED_CATEGORIES = Set.of("OWNER_DOCUMENT", "USER_DOCUMENT");
@@ -54,6 +62,43 @@ public class FileController {
                 stored.getCreatedAt()
         );
         return ResponseEntity.ok(ApiResponse.success("File uploaded successfully", response));
+    }
+
+    @PostMapping("/{fileId}/insurance-details")
+    @Operation(summary = "Best-effort read of policy number + valid-till date from an uploaded insurance PDF",
+            description = "Returns null fields when they can't be confidently detected — the caller must " +
+                    "let the user fill or correct them manually rather than treating this as authoritative. " +
+                    "If the PDF is password-protected, returns passwordRequired=true instead; re-submit with " +
+                    "{\"password\": \"...\"} once the user has entered it.")
+    @SecurityRequirement(name = "bearerAuth")
+    public ResponseEntity<ApiResponse<InsuranceDetailsResponse>> extractInsuranceDetails(
+            @PathVariable Long fileId,
+            @RequestBody(required = false) InsuranceAnalyzeRequest request,
+            @AuthenticationPrincipal PuduvandiUserPrincipal principal) {
+
+        StoredFile storedFile = storedFileRepository.findById(fileId)
+                .orElseThrow(() -> new ResourceNotFoundException("File", fileId));
+
+        boolean isUploader = principal.getUserId() != null
+                && principal.getUserId().equals(storedFile.getUploadedByUserId());
+        boolean isAdmin = "ADMIN".equals(principal.getRole()) || "SUPER_ADMIN".equals(principal.getRole());
+        if (!isUploader && !isAdmin) {
+            throw new ForbiddenException("You do not have permission to access this file.");
+        }
+
+        if (!MediaType.APPLICATION_PDF_VALUE.equalsIgnoreCase(storedFile.getContentType())) {
+            throw new BusinessException("Please upload the insurance document as a PDF so its details can be read automatically.");
+        }
+
+        String password = request != null ? request.password() : null;
+        InsuranceDetailsResponse details;
+        try (InputStream in = fileStorageService.loadAsResource(fileId).getInputStream()) {
+            details = insuranceDocumentParser.extract(in.readAllBytes(), password);
+        } catch (IOException ex) {
+            throw new BusinessException("Could not read the uploaded PDF.");
+        }
+
+        return ResponseEntity.ok(ApiResponse.success("Insurance details extracted", details));
     }
 
     @GetMapping("/{fileId}")

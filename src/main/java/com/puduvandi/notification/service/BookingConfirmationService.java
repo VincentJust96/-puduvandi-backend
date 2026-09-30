@@ -2,6 +2,7 @@ package com.puduvandi.notification.service;
 
 import com.puduvandi.booking.entity.Booking;
 import com.puduvandi.booking.repository.BookingRepository;
+import com.puduvandi.common.enums.NotificationPurpose;
 import com.puduvandi.errorlog.service.ErrorLogService;
 import com.puduvandi.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -44,7 +45,8 @@ public class BookingConfirmationService {
     public void sendBookingConfirmation(Booking booking) {
         safely(booking, () -> {
             String message = buildConfirmationMessage(booking);
-            notificationService.sendBoth(booking.getId(), booking.getCustomer().getPhoneNumber(), message);
+            notificationService.sendBoth(booking.getId(), booking.getCustomer().getPhoneNumber(), message,
+                    NotificationPurpose.BOOKING_CONFIRMATION);
             log.info("Booking confirmation notification sent: bookingId={}", booking.getId());
         });
     }
@@ -53,7 +55,8 @@ public class BookingConfirmationService {
     public void sendPickupReminder(Long bookingId) {
         withBooking(bookingId, booking -> {
             String message = buildPickupReminderMessage(booking);
-            notificationService.sendBoth(booking.getId(), booking.getCustomer().getPhoneNumber(), message);
+            notificationService.sendBoth(booking.getId(), booking.getCustomer().getPhoneNumber(), message,
+                    NotificationPurpose.PICKUP_REMINDER);
             log.info("Pickup reminder sent: bookingId={}", booking.getId());
         });
     }
@@ -66,7 +69,8 @@ public class BookingConfirmationService {
     public void sendRideCompletionNotification(Booking booking) {
         safely(booking, () -> {
             String message = buildCompletionMessage(booking);
-            notificationService.sendBoth(booking.getId(), booking.getCustomer().getPhoneNumber(), message);
+            notificationService.sendBoth(booking.getId(), booking.getCustomer().getPhoneNumber(), message,
+                    NotificationPurpose.RIDE_COMPLETION);
             log.info("Ride completion notification sent: bookingId={}", booking.getId());
         });
     }

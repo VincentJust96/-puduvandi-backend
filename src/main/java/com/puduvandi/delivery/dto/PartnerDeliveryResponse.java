@@ -1,5 +1,6 @@
 package com.puduvandi.delivery.dto;
 
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 
 import java.math.BigDecimal;
@@ -11,6 +12,7 @@ public record PartnerDeliveryResponse(
     String bookingReference,
     String bikeBrand,
     String bikeModel,
+    DeliveryLegType legType,
     BigDecimal pickupLatitude,
     BigDecimal pickupLongitude,
     BigDecimal dropoffLatitude,

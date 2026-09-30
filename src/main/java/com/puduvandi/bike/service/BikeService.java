@@ -8,6 +8,7 @@ import com.puduvandi.bike.entity.BikeImage;
 import com.puduvandi.bike.repository.BikeRepository;
 import com.puduvandi.common.enums.BikeStatus;
 import com.puduvandi.common.enums.BikeVerificationStatus;
+import com.puduvandi.common.enums.BookingStatus;
 import com.puduvandi.common.enums.FuelType;
 import com.puduvandi.common.enums.TransmissionType;
 import com.puduvandi.booking.repository.BookingRepository;
@@ -17,6 +18,9 @@ import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
 import com.puduvandi.owner.entity.OwnerProfile;
 import com.puduvandi.owner.repository.OwnerProfileRepository;
+import com.puduvandi.review.repository.ReviewRepository;
+import com.puduvandi.storage.service.FileStorageService;
+import com.puduvandi.storage.service.InsuranceDocumentParser;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -25,9 +29,15 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Manages bike listings: add, edit, delete, availability toggle, browse.
@@ -40,6 +50,11 @@ public class BikeService {
     private final BikeRepository bikeRepository;
     private final OwnerProfileRepository ownerProfileRepository;
     private final BookingRepository bookingRepository;
+    private final ReviewRepository reviewRepository;
+    private final FileStorageService fileStorageService;
+    private final InsuranceDocumentParser insuranceDocumentParser;
+
+    private static final Pattern FILE_ID_PATTERN = Pattern.compile("/files/(\\d+)");
 
     // ===== OWNER OPERATIONS =====
 
@@ -67,6 +82,9 @@ public class BikeService {
                 .transmission(request.transmission())
                 .engineCapacity(request.engineCapacity())
                 .helmetIncluded(request.helmetIncluded())
+                .papersIncluded(request.papersIncluded() == null ? Boolean.TRUE : request.papersIncluded())
+                .fuelIncluded(request.fuelIncluded() == null ? Boolean.TRUE : request.fuelIncluded())
+                .roadsideAssistance(request.roadsideAssistance() == null ? Boolean.TRUE : request.roadsideAssistance())
                 .pricePerHour(request.pricePerHour())
                 .pricePerDay(request.pricePerDay())
                 .securityDeposit(request.securityDeposit())
@@ -78,6 +96,11 @@ public class BikeService {
                 .latitude(request.latitude())
                 .longitude(request.longitude())
                 .area(request.area())
+                .rcDocumentUrl(request.rcDocumentUrl())
+                .insuranceDocumentUrl(request.insuranceDocumentUrl())
+                .insurancePolicyNumber(request.insurancePolicyNumber())
+                .insuranceExpiryDate(request.insuranceExpiryDate())
+                .insuranceDocumentPassword(request.insuranceDocumentPassword())
                 .build();
 
         addImagesToNewBike(bike, request.imageUrls());
@@ -108,6 +131,17 @@ public class BikeService {
         bike.setTransmission(request.transmission());
         bike.setEngineCapacity(request.engineCapacity());
         bike.setHelmetIncluded(request.helmetIncluded());
+        // Null-guarded like latitude/area below: a client that omits these
+        // fields must not silently flip an existing true flag to false.
+        if (request.papersIncluded() != null) {
+            bike.setPapersIncluded(request.papersIncluded());
+        }
+        if (request.fuelIncluded() != null) {
+            bike.setFuelIncluded(request.fuelIncluded());
+        }
+        if (request.roadsideAssistance() != null) {
+            bike.setRoadsideAssistance(request.roadsideAssistance());
+        }
         bike.setPricePerHour(request.pricePerHour());
         bike.setPricePerDay(request.pricePerDay());
         bike.setSecurityDeposit(request.securityDeposit());
@@ -118,6 +152,17 @@ public class BikeService {
         }
         if (request.area() != null) {
             bike.setArea(request.area());
+        }
+        bike.setRcDocumentUrl(request.rcDocumentUrl());
+        bike.setInsuranceDocumentUrl(request.insuranceDocumentUrl());
+        bike.setInsurancePolicyNumber(request.insurancePolicyNumber());
+        bike.setInsuranceExpiryDate(request.insuranceExpiryDate());
+        // Null-guarded unlike the fields above: toResponse() never echoes the real
+        // password back to the owner (admin-only, see BikeResponse), so the owner's
+        // edit form can't round-trip it — omitting it from the request must mean
+        // "leave unchanged," not "clear it."
+        if (request.insuranceDocumentPassword() != null) {
+            bike.setInsuranceDocumentPassword(request.insuranceDocumentPassword());
         }
 
         // Replace images
@@ -178,9 +223,9 @@ public class BikeService {
     @Transactional(readOnly = true)
     public Page<BikeResponse> getMyBikes(Long userId, int page, int size) {
         OwnerProfile owner = findOwnerProfile(userId);
-        return bikeRepository.findByOwnerIdAndDeletedFalse(
-                owner.getId(), PageRequest.of(page, size, Sort.by("createdAt").descending()))
-                .map(this::toResponse);
+        Page<Bike> bikes = bikeRepository.findByOwnerIdAndDeletedFalse(
+                owner.getId(), PageRequest.of(page, size, Sort.by("createdAt").descending()));
+        return toResponsePage(bikes);
     }
 
     // ===== PUBLIC / CUSTOMER OPERATIONS =====
@@ -195,10 +240,10 @@ public class BikeService {
             BigDecimal minPrice, BigDecimal maxPrice,
             Boolean helmetIncluded, String search, int page, int size) {
 
-        return bikeRepository.browseAvailableBikes(
+        Page<Bike> bikes = bikeRepository.browseAvailableBikes(
                 brand, model, area, fuelType, transmission, minPrice, maxPrice, helmetIncluded, search,
-                PageRequest.of(page, size, Sort.by("createdAt").descending()))
-                .map(this::toResponse);
+                PageRequest.of(page, size, Sort.by("createdAt").descending()));
+        return toResponsePage(bikes);
     }
 
     /**
@@ -210,6 +255,43 @@ public class BikeService {
                 .findByIdAndDeletedFalseAndVerificationStatus(bikeId, BikeVerificationStatus.APPROVED)
                 .orElseThrow(() -> new ResourceNotFoundException("Bike", bikeId));
         return toResponse(bike);
+    }
+
+    /**
+     * Streams the bike's insurance PDF for inline viewing (e.g. in an &lt;iframe&gt;),
+     * decrypting it first if the owner's stored password unlocks it. The password itself
+     * never reaches the caller — it's applied here and the plain, unencrypted bytes are
+     * what gets returned. Falls back to the original (still-encrypted) bytes if there's
+     * no stored password or it doesn't work, so the browser's own PDF viewer can still
+     * prompt for one as a last resort.
+     */
+    @Transactional(readOnly = true)
+    public byte[] loadInsuranceDocument(Long bikeId) {
+        Bike bike = bikeRepository
+                .findByIdAndDeletedFalseAndVerificationStatus(bikeId, BikeVerificationStatus.APPROVED)
+                .orElseThrow(() -> new ResourceNotFoundException("Bike", bikeId));
+
+        String url = bike.getInsuranceDocumentUrl();
+        if (url == null) {
+            throw new ResourceNotFoundException("Insurance document", bikeId);
+        }
+
+        Matcher matcher = FILE_ID_PATTERN.matcher(url);
+        if (!matcher.find()) {
+            throw new BusinessException("Could not resolve the insurance document.");
+        }
+        Long fileId = Long.valueOf(matcher.group(1));
+
+        byte[] rawBytes;
+        try (InputStream in = fileStorageService.loadAsResource(fileId).getInputStream()) {
+            rawBytes = in.readAllBytes();
+        } catch (IOException ex) {
+            throw new BusinessException("Could not read the insurance document.");
+        }
+
+        return bike.getInsuranceDocumentPassword() != null
+                ? insuranceDocumentParser.decrypt(rawBytes, bike.getInsuranceDocumentPassword())
+                : rawBytes;
     }
 
     // ===== PRIVATE HELPERS =====
@@ -239,6 +321,37 @@ public class BikeService {
     }
 
     public BikeResponse toResponse(Bike bike) {
+        long totalTrips = bookingRepository.countByBikeIdAndStatusAndDeletedFalse(
+                bike.getId(), BookingStatus.COMPLETED);
+        Double rating = reviewRepository.averageRatingForBike(bike.getId());
+        return toResponse(bike, totalTrips, rating);
+    }
+
+    /**
+     * Batches the per-bike trip-count/rating lookups for an entire page into two queries
+     * total instead of one-per-bike (was a real N+1: up to 2 extra queries per row on every
+     * browse/my-bikes page — noticeable well before other parts of the system under load).
+     */
+    private Page<BikeResponse> toResponsePage(Page<Bike> bikes) {
+        List<Long> bikeIds = bikes.getContent().stream().map(Bike::getId).toList();
+        if (bikeIds.isEmpty()) {
+            return bikes.map(bike -> toResponse(bike, 0L, null));
+        }
+
+        Map<Long, Long> tripCounts = bookingRepository
+                .countCompletedTripsForBikes(bikeIds, BookingStatus.COMPLETED).stream()
+                .collect(Collectors.toMap(BookingRepository.BikeTripCount::getBikeId,
+                        BookingRepository.BikeTripCount::getTripCount));
+        Map<Long, Double> ratings = reviewRepository.averageRatingsForBikes(bikeIds).stream()
+                .collect(Collectors.toMap(ReviewRepository.BikeAverageRating::getBikeId,
+                        ReviewRepository.BikeAverageRating::getAvgRating));
+
+        return bikes.map(bike -> toResponse(bike,
+                tripCounts.getOrDefault(bike.getId(), 0L),
+                ratings.get(bike.getId())));
+    }
+
+    private BikeResponse toResponse(Bike bike, long totalTrips, Double rating) {
         List<String> imageUrls = bike.getImages().stream()
                 .map(BikeImage::getImageUrl)
                 .toList();
@@ -259,6 +372,9 @@ public class BikeService {
                 bike.getTransmission(),
                 bike.getEngineCapacity(),
                 bike.isHelmetIncluded(),
+                bike.isPapersIncluded(),
+                bike.isFuelIncluded(),
+                bike.isRoadsideAssistance(),
                 bike.getPricePerHour(),
                 bike.getPricePerDay(),
                 bike.getSecurityDeposit(),
@@ -269,7 +385,17 @@ public class BikeService {
                 bike.getCreatedAt(),
                 bike.getLatitude(),
                 bike.getLongitude(),
-                bike.getArea()
+                bike.getArea(),
+                totalTrips,
+                rating,
+                bike.getRcDocumentUrl(),
+                bike.getInsuranceDocumentUrl(),
+                bike.getInsurancePolicyNumber(),
+                bike.getInsuranceExpiryDate(),
+                // Admin/super-admin-only field — see BikeResponse's javadoc. Customer
+                // browse/detail and owner add/update/my-bikes all go through this
+                // mapper, so it must never leak the real password.
+                null
         );
     }
 }

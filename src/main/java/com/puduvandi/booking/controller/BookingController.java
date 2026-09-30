@@ -8,6 +8,9 @@ import com.puduvandi.booking.dto.PriceEstimateResponse;
 import com.puduvandi.booking.service.BookingService;
 import com.puduvandi.common.dto.ApiResponse;
 import com.puduvandi.common.enums.BookingStatus;
+import com.puduvandi.handover.dto.ConditionReviewResponse;
+import com.puduvandi.handover.dto.SubmitConditionReviewRequest;
+import com.puduvandi.handover.service.BikeConditionReviewService;
 import com.puduvandi.security.PuduvandiUserPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -33,6 +36,7 @@ import java.util.List;
 public class BookingController {
 
     private final BookingService bookingService;
+    private final BikeConditionReviewService conditionReviewService;
 
     // ===== PRICE ESTIMATE (no auth) =====
 
@@ -112,6 +116,30 @@ public class BookingController {
     // requires OTP handover verification. See HandoverOtpController
     // (POST /api/v1/bookings/{id}/handover/pickup_self/generate + /verify, or
     // /handover/receive_partner/generate + /verify for partner-delivery bookings).
+
+    @PostMapping("/{id}/condition-review")
+    @PreAuthorize("hasRole('CUSTOMER')")
+    @Operation(summary = "Submit the pre-pickup bike condition review (photos, fuel level, odometer) — required before a pickup OTP can be generated")
+    public ResponseEntity<ApiResponse<ConditionReviewResponse>> submitConditionReview(
+            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
+            @PathVariable Long id,
+            @Valid @RequestBody SubmitConditionReviewRequest request) {
+
+        ConditionReviewResponse response = conditionReviewService.submit(principal.getUserId(), id, request);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success("Condition review submitted", response));
+    }
+
+    @GetMapping("/{id}/condition-review")
+    @PreAuthorize("hasAnyRole('CUSTOMER','OWNER')")
+    @Operation(summary = "Get the booking's pre-pickup bike condition review, if one has been filed")
+    public ResponseEntity<ApiResponse<ConditionReviewResponse>> getConditionReview(
+            @AuthenticationPrincipal PuduvandiUserPrincipal principal,
+            @PathVariable Long id) {
+
+        ConditionReviewResponse response = conditionReviewService.get(principal.getUserId(), id);
+        return ResponseEntity.ok(ApiResponse.success("Condition review fetched", response));
+    }
 
     @PostMapping("/{id}/return-request")
     @PreAuthorize("hasRole('CUSTOMER')")

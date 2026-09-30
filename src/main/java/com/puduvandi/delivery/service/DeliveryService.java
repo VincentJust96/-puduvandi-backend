@@ -4,6 +4,7 @@ import com.puduvandi.auth.entity.User;
 import com.puduvandi.auth.repository.UserRepository;
 import com.puduvandi.bike.entity.Bike;
 import com.puduvandi.booking.entity.Booking;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 import com.puduvandi.common.enums.KycStatus;
 import com.puduvandi.delivery.dto.DeliveryResponse;
@@ -15,7 +16,12 @@ import com.puduvandi.delivery.util.GeoUtils;
 import com.puduvandi.exception.BusinessException;
 import com.puduvandi.exception.ForbiddenException;
 import com.puduvandi.exception.ResourceNotFoundException;
+import com.puduvandi.partner.entity.PartnerProfile;
+import com.puduvandi.partner.repository.PartnerProfileRepository;
+import com.puduvandi.push.service.WebPushService;
+import com.puduvandi.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,6 +35,7 @@ import java.util.List;
  * pickup location to the customer's chosen drop-off point, priced per km.
  * No auto-matching — first partner to claim a PENDING job gets it.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DeliveryService {
@@ -36,40 +43,90 @@ public class DeliveryService {
     private final DeliveryOrderRepository deliveryOrderRepository;
     private final DeliverySettingsRepository deliverySettingsRepository;
     private final UserRepository userRepository;
+    private final PartnerProfileRepository partnerProfileRepository;
+    private final WebPushService webPushService;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     @Transactional
     public void createDeliveryOrder(Booking booking, Bike bike, BigDecimal dropoffLat, BigDecimal dropoffLng) {
+        deliveryOrderRepository.save(buildOrder(booking, DeliveryLegType.OUTBOUND,
+                bike.getLatitude(), bike.getLongitude(), dropoffLat, dropoffLng));
+        notifyAvailablePartners();
+    }
+
+    /**
+     * Creates the independently-claimable return leg once the customer requests a return —
+     * any available partner (including, but not necessarily, the one who did the outbound
+     * leg) can claim it and earn its own fee, same as the outbound job.
+     */
+    @Transactional
+    public void createReturnDeliveryOrder(Booking booking) {
+        Bike bike = booking.getBike();
+        deliveryOrderRepository.save(buildOrder(booking, DeliveryLegType.RETURN,
+                booking.getDropoffLatitude(), booking.getDropoffLongitude(), bike.getLatitude(), bike.getLongitude()));
+        notifyAvailablePartners();
+    }
+
+    /** Push to every KYC-approved partner — no targeting/proximity logic, same as the pull-based /available list. */
+    private void notifyAvailablePartners() {
+        try {
+            List<Long> partnerUserIds = partnerProfileRepository
+                    .findAllByUserKycStatusAndDeletedFalse(KycStatus.APPROVED)
+                    .stream().map(PartnerProfile::getUser).map(User::getId).toList();
+            webPushService.sendToUsers(partnerUserIds, "New delivery job available",
+                    "A new delivery job just opened up — first to claim it gets it.", "/partner/dashboard");
+        } catch (Exception ex) {
+            log.warn("Failed to push new-delivery-job notification", ex);
+        }
+        realtimeEventPublisher.deliveryJobAvailable();
+    }
+
+    /** Notifies the booking's customer+owner (and the partner, once assigned) that this
+     *  delivery order's status changed, so their UI can silently re-fetch. */
+    private void publishDeliveryUpdate(DeliveryOrder order) {
+        try {
+            Booking booking = order.getBooking();
+            Long partnerUserId = order.getPartner() != null ? order.getPartner().getId() : null;
+            realtimeEventPublisher.deliveryUpdated(order.getId(), order.getStatus().name(),
+                    booking.getCustomer().getId(), booking.getOwner().getUser().getId(), partnerUserId);
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime delivery update for deliveryId={}", order.getId(), ex);
+        }
+    }
+
+    private DeliveryOrder buildOrder(Booking booking, DeliveryLegType legType,
+            BigDecimal pickupLat, BigDecimal pickupLng, BigDecimal dropoffLat, BigDecimal dropoffLng) {
         BigDecimal rate = getActiveRate();
-        BigDecimal distanceKm = GeoUtils.haversineKm(bike.getLatitude(), bike.getLongitude(), dropoffLat, dropoffLng);
+        BigDecimal distanceKm = GeoUtils.haversineKm(pickupLat, pickupLng, dropoffLat, dropoffLng);
         BigDecimal fee = distanceKm.multiply(rate).setScale(2, RoundingMode.HALF_UP);
 
-        DeliveryOrder order = DeliveryOrder.builder()
+        return DeliveryOrder.builder()
                 .booking(booking)
-                .pickupLatitude(bike.getLatitude())
-                .pickupLongitude(bike.getLongitude())
+                .legType(legType)
+                .pickupLatitude(pickupLat)
+                .pickupLongitude(pickupLng)
                 .dropoffLatitude(dropoffLat)
                 .dropoffLongitude(dropoffLng)
                 .distanceKm(distanceKm)
                 .deliveryFee(fee)
                 .status(DeliveryStatus.PENDING)
                 .build();
-
-        deliveryOrderRepository.save(order);
     }
 
     @Transactional
-    public void cancelDeliveryForBooking(Long bookingId) {
-        deliveryOrderRepository.findByBookingId(bookingId).ifPresent(order -> {
+    public void cancelDeliveryForBooking(Long bookingId, DeliveryLegType legType) {
+        deliveryOrderRepository.findByBookingIdAndLegType(bookingId, legType).ifPresent(order -> {
             if (order.getStatus() == DeliveryStatus.PENDING || order.getStatus() == DeliveryStatus.CLAIMED) {
                 order.setStatus(DeliveryStatus.CANCELLED);
                 deliveryOrderRepository.save(order);
+                publishDeliveryUpdate(order);
             }
         });
     }
 
     @Transactional(readOnly = true)
-    public DeliveryResponse getDeliveryForBooking(Long bookingId, Long requestingUserId) {
-        DeliveryOrder order = deliveryOrderRepository.findByBookingId(bookingId)
+    public DeliveryResponse getDeliveryForBooking(Long bookingId, DeliveryLegType legType, Long requestingUserId) {
+        DeliveryOrder order = deliveryOrderRepository.findByBookingIdAndLegType(bookingId, legType)
                 .orElseThrow(() -> new ResourceNotFoundException("DeliveryOrder for booking", bookingId));
 
         Booking booking = order.getBooking();
@@ -117,6 +174,7 @@ public class DeliveryService {
         order.setStatus(DeliveryStatus.CLAIMED);
         order.setClaimedAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
+        publishDeliveryUpdate(order);
 
         return toPartnerResponse(order);
     }
@@ -126,7 +184,11 @@ public class DeliveryService {
     // via the OTP-gated handover flow (HandoverOtpService), which has already verified the
     // requester's role+identity against the booking/delivery order before calling these.
 
-    /** PICKUP_PARTNER: partner has picked the bike up from the owner. CLAIMED → PICKED_UP. */
+    /**
+     * PICKUP_PARTNER (outbound leg): partner has picked the bike up from the owner.
+     * RETURN_TO_PARTNER (return leg): partner has picked the bike up from the customer.
+     * CLAIMED → PICKED_UP either way.
+     */
     @Transactional
     public PartnerDeliveryResponse transitionToPickedUp(Long deliveryId) {
         DeliveryOrder order = findDelivery(deliveryId);
@@ -136,11 +198,16 @@ public class DeliveryService {
         order.setStatus(DeliveryStatus.PICKED_UP);
         order.setPickedUpAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
+        publishDeliveryUpdate(order);
 
         return toPartnerResponse(order);
     }
 
-    /** RECEIVE_PARTNER: partner has delivered the bike to the customer. PICKED_UP → DELIVERED. */
+    /**
+     * RECEIVE_PARTNER (outbound leg): partner has delivered the bike to the customer.
+     * RETURN_FINAL (return leg): partner has delivered the bike back to the owner.
+     * PICKED_UP → DELIVERED either way.
+     */
     @Transactional
     public PartnerDeliveryResponse transitionToDelivered(Long deliveryId) {
         DeliveryOrder order = findDelivery(deliveryId);
@@ -150,34 +217,7 @@ public class DeliveryService {
         order.setStatus(DeliveryStatus.DELIVERED);
         order.setDeliveredAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
-
-        return toPartnerResponse(order);
-    }
-
-    /** RETURN_TO_PARTNER: customer has handed the bike back to the partner. DELIVERED → RETURN_COLLECTED. */
-    @Transactional
-    public PartnerDeliveryResponse transitionToReturnCollected(Long deliveryId) {
-        DeliveryOrder order = findDelivery(deliveryId);
-        if (order.getStatus() != DeliveryStatus.DELIVERED) {
-            throw new BusinessException("Bike must have been delivered before a return can be collected.");
-        }
-        order.setStatus(DeliveryStatus.RETURN_COLLECTED);
-        order.setReturnCollectedAt(LocalDateTime.now());
-        deliveryOrderRepository.save(order);
-
-        return toPartnerResponse(order);
-    }
-
-    /** RETURN_FINAL: partner has handed the returned bike back to the owner. RETURN_COLLECTED → RETURN_COMPLETED. */
-    @Transactional
-    public PartnerDeliveryResponse transitionToReturnCompleted(Long deliveryId) {
-        DeliveryOrder order = findDelivery(deliveryId);
-        if (order.getStatus() != DeliveryStatus.RETURN_COLLECTED) {
-            throw new BusinessException("Bike must be collected from the customer before the return can be completed.");
-        }
-        order.setStatus(DeliveryStatus.RETURN_COMPLETED);
-        order.setReturnCompletedAt(LocalDateTime.now());
-        deliveryOrderRepository.save(order);
+        publishDeliveryUpdate(order);
 
         return toPartnerResponse(order);
     }
@@ -200,14 +240,21 @@ public class DeliveryService {
             throw new ForbiddenException("You do not have permission to update location for this delivery.");
         }
         if (order.getStatus() != DeliveryStatus.CLAIMED
-                && order.getStatus() != DeliveryStatus.PICKED_UP
-                && order.getStatus() != DeliveryStatus.RETURN_COLLECTED) {
+                && order.getStatus() != DeliveryStatus.PICKED_UP) {
             throw new BusinessException("Location updates are only accepted while a delivery leg is in progress.");
         }
         order.setPartnerCurrentLatitude(latitude);
         order.setPartnerCurrentLongitude(longitude);
         order.setPartnerLocationUpdatedAt(LocalDateTime.now());
         deliveryOrderRepository.save(order);
+
+        try {
+            Booking booking = order.getBooking();
+            realtimeEventPublisher.locationUpdated(booking.getId(),
+                    List.of(booking.getCustomer().getId(), booking.getOwner().getUser().getId()));
+        } catch (Exception ex) {
+            log.warn("Failed to publish realtime location update for deliveryId={}", deliveryId, ex);
+        }
     }
 
     // ===== Private helpers =====
@@ -233,19 +280,24 @@ public class DeliveryService {
     }
 
     /**
-     * Customer contact is only surfaced to the partner once the bike has actually been
-     * picked up from the owner — before that, the partner has no legitimate need for it
-     * and it would leak PII while the job is still just a claimed/unfulfilled listing.
+     * On the outbound leg, customer contact is only surfaced once the bike has actually
+     * been picked up from the owner — before that, the partner has no legitimate need for
+     * it and it would leak PII while the job is still just a claimed/unfulfilled listing.
+     * On the return leg, the customer *is* the pickup point, so the partner needs their
+     * contact as soon as they've claimed the job.
      */
-    private static final java.util.Set<DeliveryStatus> CUSTOMER_CONTACT_VISIBLE_STATUSES = java.util.Set.of(
-            DeliveryStatus.PICKED_UP, DeliveryStatus.DELIVERED,
-            DeliveryStatus.RETURN_COLLECTED, DeliveryStatus.RETURN_COMPLETED);
+    private static final java.util.Set<DeliveryStatus> OUTBOUND_CONTACT_VISIBLE_STATUSES = java.util.Set.of(
+            DeliveryStatus.PICKED_UP, DeliveryStatus.DELIVERED);
+    private static final java.util.Set<DeliveryStatus> RETURN_CONTACT_VISIBLE_STATUSES = java.util.Set.of(
+            DeliveryStatus.CLAIMED, DeliveryStatus.PICKED_UP, DeliveryStatus.DELIVERED);
 
     private PartnerDeliveryResponse toPartnerResponse(DeliveryOrder order) {
         Booking booking = order.getBooking();
         Bike bike = booking.getBike();
         User customer = booking.getCustomer();
-        boolean contactVisible = CUSTOMER_CONTACT_VISIBLE_STATUSES.contains(order.getStatus());
+        boolean contactVisible = order.getLegType() == DeliveryLegType.RETURN
+                ? RETURN_CONTACT_VISIBLE_STATUSES.contains(order.getStatus())
+                : OUTBOUND_CONTACT_VISIBLE_STATUSES.contains(order.getStatus());
 
         return new PartnerDeliveryResponse(
                 order.getId(),
@@ -253,6 +305,7 @@ public class DeliveryService {
                 booking.getBookingReference(),
                 bike.getBrand(),
                 bike.getModel(),
+                order.getLegType(),
                 order.getPickupLatitude(),
                 order.getPickupLongitude(),
                 order.getDropoffLatitude(),

@@ -2,6 +2,7 @@ package com.puduvandi.delivery.entity;
 
 import com.puduvandi.auth.entity.User;
 import com.puduvandi.booking.entity.Booking;
+import com.puduvandi.common.enums.DeliveryLegType;
 import com.puduvandi.common.enums.DeliveryStatus;
 import jakarta.persistence.*;
 import lombok.*;
@@ -13,8 +14,11 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * A partner-delivery job for one booking: bring the bike from its stored
- * pickup location to the customer's chosen drop-off point, charged per km.
+ * One partner-delivery leg for a booking — either OUTBOUND (bike's stored
+ * location → customer's chosen drop-off point) or RETURN (customer's
+ * location → bike's stored location), charged per km. Each leg is claimed,
+ * fulfilled, and paid independently — a booking may have one row per leg
+ * type, and each may be completed by a different partner.
  */
 @Entity
 @Table(name = "delivery_orders")
@@ -30,9 +34,14 @@ public class DeliveryOrder {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @OneToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "booking_id", nullable = false, unique = true)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "booking_id", nullable = false)
     private Booking booking;
+
+    /** Which direction this job runs — a booking has at most one row per leg type. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "leg_type", nullable = false)
+    private DeliveryLegType legType;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "partner_id")
@@ -68,14 +77,6 @@ public class DeliveryOrder {
 
     @Column(name = "delivered_at")
     private LocalDateTime deliveredAt;
-
-    /** Customer handed the bike back to the partner (return leg). */
-    @Column(name = "return_collected_at")
-    private LocalDateTime returnCollectedAt;
-
-    /** Partner handed the returned bike back to the owner — return complete. */
-    @Column(name = "return_completed_at")
-    private LocalDateTime returnCompletedAt;
 
     @Column(name = "partner_current_latitude", precision = 10, scale = 8)
     private BigDecimal partnerCurrentLatitude;

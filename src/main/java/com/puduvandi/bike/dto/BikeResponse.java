@@ -6,6 +6,7 @@ import com.puduvandi.common.enums.FuelType;
 import com.puduvandi.common.enums.TransmissionType;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -21,6 +22,9 @@ public record BikeResponse(
     TransmissionType transmission,
     Integer engineCapacity,
     boolean helmetIncluded,
+    boolean papersIncluded,
+    boolean fuelIncluded,
+    boolean roadsideAssistance,
     BigDecimal pricePerHour,
     BigDecimal pricePerDay,
     BigDecimal securityDeposit,
@@ -31,5 +35,19 @@ public record BikeResponse(
     LocalDateTime createdAt,
     BigDecimal latitude,
     BigDecimal longitude,
-    String area
+    String area,
+    long totalTrips,
+    /** Average of all reviews for this bike, null when it has none yet. */
+    Double rating,
+    String rcDocumentUrl,
+    String insuranceDocumentUrl,
+    String insurancePolicyNumber,
+    LocalDate insuranceExpiryDate,
+    /**
+     * The insurance PDF's password, if it was encrypted — admin/super-admin only.
+     * BikeService.toResponse (customer browse/detail, owner add/update/my-bikes)
+     * always passes null here; only AdminService.toBikeResponse (admin bike list/
+     * approve/reject/update) fills in the real value.
+     */
+    String insuranceDocumentPassword
 ) {}

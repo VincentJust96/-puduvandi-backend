@@ -14,8 +14,14 @@ public enum HandoverPurpose {
     RECEIVE_PARTNER,
     /** Self-pickup return: owner generates, customer validates. RETURN_REQUESTED → COMPLETED. */
     RETURN_SELF,
-    /** Partner delivery return, customer→partner leg: customer generates, partner validates. DeliveryOrder → RETURN_COLLECTED. */
+    /**
+     * Partner delivery return, customer→partner leg: customer generates, partner validates.
+     * Return-leg DeliveryOrder CLAIMED → PICKED_UP.
+     */
     RETURN_TO_PARTNER,
-    /** Partner delivery return, partner→owner leg: owner generates, partner validates. Booking → COMPLETED; DeliveryOrder → RETURN_COMPLETED. */
+    /**
+     * Partner delivery return, partner→owner leg: owner generates, partner validates.
+     * Return-leg DeliveryOrder → DELIVERED; Booking → COMPLETED.
+     */
     RETURN_FINAL
 }

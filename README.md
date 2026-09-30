@@ -52,13 +52,20 @@ com.puduvandi/
 
 ## Database Migrations (Flyway)
 
-| Version | File | What it creates / changes |
+44 migrations applied to date (`V1`–`V44`, see `src/main/resources/db/migration/`). Grouped by the feature area each batch introduced, oldest first:
+
+| Versions | Feature area | What it added |
 |---|---|---|
-| V1 | `V1__create_users_and_auth_tables.sql` | `users`, `otp_records`, `refresh_tokens` |
-| V2 | `V2__create_owner_and_document_tables.sql` | `owner_profiles`, `owner_documents`, `user_documents` |
-| V3 | `V3__create_bike_and_booking_tables.sql` | `bikes`, `bike_images`, `bookings` |
-| V4 | `V4__create_commission_settings_table.sql` | `commission_settings` (seeded with 20%) |
-| V5 | `V5__convert_enum_columns_to_varchar.sql` | Converts all PostgreSQL custom enum type columns to `VARCHAR(50)` |
+| V1–V5 | Core schema | `users`/`otp_records`/`refresh_tokens`, `owner_profiles`/documents, `bikes`/`bookings`, `commission_settings`, enum→VARCHAR conversion |
+| V6–V9 | Early hardening | Nullable role for new signups, `stored_files` (file upload metadata), `error_logs` (centralized failure log) |
+| V10–V12 | Seed data | Demo users/bikes/bookings, real Wikimedia bike photos, booking-reference sequence |
+| V13–V21 | Delivery & handover | Customer/partner location tracking, `notification_logs`, `handover_otps`, `partner_profiles`/documents |
+| V22–V24 | Payments (schema) | `payments` table, payment-plan tracking, dropped unused owner/partner bank-detail columns |
+| V25–V28 | Auth & admin | Email/password auth, phone-change requests, seeded super-admin account |
+| V29–V33 | Delivery lifecycle | Delivery leg types, security-deposit hold/claim/release, `push_subscriptions`, delivery-status cleanup |
+| V34–V38 | Reviews & bike detail | `reviews` table, bike inclusion flags/document fields, notification purpose |
+| V39–V41 | Bike condition/insurance | Insurance-document password field, deposit-refund tracking, `bike_condition_reviews` (pre-pickup condition snapshot) |
+| V42–V44 | Investor-demo hardening pass | Missing FK indexes + one-pending-claim-per-booking constraint, `admin_audit_log` table, widened encrypted insurance-password column |
 
 > **Note:** `baseline-version: 3` is set in `application.yml` because V1–V3 tables were created before Flyway tracking was enabled. Flyway baselines at V3 and only applies V4+ on a fresh-tracked DB.
 

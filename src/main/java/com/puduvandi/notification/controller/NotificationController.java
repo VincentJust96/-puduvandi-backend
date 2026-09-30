@@ -1,6 +1,7 @@
 package com.puduvandi.notification.controller;
 
 import com.puduvandi.common.dto.ApiResponse;
+import com.puduvandi.common.enums.NotificationPurpose;
 import com.puduvandi.notification.dto.NotificationRequest;
 import com.puduvandi.notification.service.BookingConfirmationService;
 import com.puduvandi.notification.service.NotificationService;
@@ -40,21 +41,21 @@ public class NotificationController {
     @PostMapping("/sms")
     @Operation(summary = "Send a one-off SMS")
     public ResponseEntity<ApiResponse<Void>> sendSms(@Valid @RequestBody NotificationRequest request) {
-        notificationService.sendSMS(request.bookingId(), request.phone(), request.message());
+        notificationService.sendSMS(request.bookingId(), request.phone(), request.message(), NotificationPurpose.ADHOC);
         return ResponseEntity.ok(ApiResponse.success("SMS queued for sending"));
     }
 
     @PostMapping("/whatsapp")
     @Operation(summary = "Send a one-off WhatsApp message")
     public ResponseEntity<ApiResponse<Void>> sendWhatsApp(@Valid @RequestBody NotificationRequest request) {
-        notificationService.sendWhatsApp(request.bookingId(), request.phone(), request.message());
+        notificationService.sendWhatsApp(request.bookingId(), request.phone(), request.message(), NotificationPurpose.ADHOC);
         return ResponseEntity.ok(ApiResponse.success("WhatsApp message queued for sending"));
     }
 
     @PostMapping("/send-both")
     @Operation(summary = "Send the same message via SMS and WhatsApp")
     public ResponseEntity<ApiResponse<Void>> sendBoth(@Valid @RequestBody NotificationRequest request) {
-        notificationService.sendBoth(request.bookingId(), request.phone(), request.message());
+        notificationService.sendBoth(request.bookingId(), request.phone(), request.message(), NotificationPurpose.ADHOC);
         return ResponseEntity.ok(ApiResponse.success("SMS and WhatsApp queued for sending"));
     }
 

@@ -6,5 +6,10 @@ public record OwnerDashboardResponse(
         long totalBikes,
         long totalBookings,
         long activeBookings,
-        BigDecimal totalEarnings
+        /** Net of commission — SUM(booking.ownerEarning) for COMPLETED bookings. */
+        BigDecimal totalEarnings,
+        /** Gross rent before commission — SUM(booking.baseAmount) for COMPLETED bookings. */
+        BigDecimal totalRevenue,
+        /** Real per-booking commission actually charged — SUM(booking.commissionAmount). */
+        BigDecimal totalCommission
 ) {}
