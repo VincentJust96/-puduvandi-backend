@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Pay for your Puduvandi booking</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c2430; --muted:#5f6b7a; --line:#e3e7ec; --accent:#0f7a5c; --accent-text:#fff; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12161b; --card:#1b2129; --text:#e8edf2; --muted:#9aa6b3; --line:#2c3440; --accent:#35b58b; --accent-text:#08140f; --bad:#ff8a80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:440px; margin:0 auto; padding:24px 16px 40px; }
+  h1 { font-size:1.25rem; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:.95rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:8px 16px; margin:0; }
+  dt { color:var(--muted); }
+  dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
+  .total { border-top:1px solid var(--line); margin-top:12px; padding-top:12px; display:flex; justify-content:space-between; font-weight:700; font-size:1.1rem; }
+  button { width:100%; margin-top:18px; padding:14px; border:0; border-radius:12px; background:var(--accent); color:var(--accent-text); font:inherit; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:default; }
+  .msg { margin-top:16px; font-size:.95rem; }
+  .msg.bad { color:var(--bad); }
+  .done { text-align:center; padding:24px 8px; }
+  .done .big { font-size:2.5rem; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Puduvandi booking payment</h1>
+  <p class="sub" id="ref">Loading your booking…</p>
+
+  <section class="card" id="summary" hidden>
+    <dl>
+      <dt>Bike</dt><dd id="bike"></dd>
+      <dt>Pickup at</dt><dd id="area"></dd>
+      <dt>From</dt><dd id="from"></dd>
+      <dt>To</dt><dd id="to"></dd>
+      <dt>Rent</dt><dd id="rent"></dd>
+      <dt>Security deposit</dt><dd id="deposit"></dd>
+    </dl>
+    <div class="total"><span>Total</span><span id="total"></span></div>
+    <button id="pay" hidden>Pay now</button>
+  </section>
+
+  <section class="card done" id="done" hidden>
+    <div class="big">✅</div>
+    <p><strong>Payment received.</strong></p>
+    <p>Your booking is confirmed. The details are on their way to you on WhatsApp. You can close this page.</p>
+  </section>
+
+  <p class="msg" id="msg" role="status" aria-live="polite"></p>
+</main>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js" defer></script>
+<script>
+(function () {
+  var token = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
+  var base = location.pathname.replace(/\/[^\/]*\/?$/, '') + '/' + encodeURIComponent(token);
+  var $ = function (id) { return document.getElementById(id); };
+  var payBtn = $('pay');
+
+  function money(v) { return '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
+  function when(v) {
+    return new Date(v).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function say(text, bad) { var m = $('msg'); m.textContent = text || ''; m.className = bad ? 'msg bad' : 'msg'; }
+
+  function call(method, path, body) {
+    return fetch(base + path, {
+      method: method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok || j.success === false) { throw new Error(j.message || 'Something went wrong. Please try again.'); }
+        return j.data;
+      });
+    });
+  }
+
+  function showPaid() {
+    $('summary').hidden = true; $('done').hidden = false; say('');
+  }
+
+  function render(d) {
+    $('ref').textContent = 'Booking ' + d.bookingReference;
+    $('bike').textContent = d.bike;
+    $('area').textContent = d.area || '—';
+    $('from').textContent = when(d.pickupDatetime);
+    $('to').textContent = when(d.returnDatetime);
+    $('rent').textContent = money(d.rentAmount);
+    $('deposit').textContent = money(d.securityDeposit);
+    $('total').textContent = money(d.totalAmount);
+    $('summary').hidden = false;
+
+    if (d.status === 'PAID') { showPaid(); return; }
+    if (d.status === 'EXPIRED') {
+      say('This payment link has expired, so the bike was released. Send HI to Puduvandi on WhatsApp to book again.', true);
+      return;
+    }
+    payBtn.textContent = 'Pay ' + money(d.totalAmount);
+    payBtn.hidden = false;
+    say('Please pay before ' + when(d.expiresAt) + ', or the bike is released.');
+  }
+
+  function pay() {
+    if (!window.Razorpay) { say('The payment window is still loading. Please try again in a moment.', true); return; }
+    payBtn.disabled = true; say('Opening secure payment…');
+    call('POST', '/order').then(function (o) {
+      var rzp = new window.Razorpay({
+        key: o.razorpayKeyId,
+        order_id: o.razorpayOrderId,
+        amount: o.amountInPaise,
+        currency: o.currency,
+        name: 'Puduvandi',
+        description: $('ref').textContent,
+        handler: function (res) {
+          say('Confirming your payment…');
+          call('POST', '/verify', {
+            razorpayOrderId: res.razorpay_order_id,
+            razorpayPaymentId: res.razorpay_payment_id,
+            razorpaySignature: res.razorpay_signature
+          }).then(showPaid).catch(function (e) {
+            payBtn.disabled = false;
+            say(e.message + ' If money was taken, contact support with booking ' + $('ref').textContent + '.', true);
+          });
+        },
+        modal: { ondismiss: function () { payBtn.disabled = false; say('Payment not finished. Tap the button to try again.'); } }
+      });
+      rzp.on('payment.failed', function (r) {
+        payBtn.disabled = false;
+        say((r && r.error && r.error.description) || 'Payment failed. Please try again.', true);
+      });
+      rzp.open();
+    }).catch(function (e) { payBtn.disabled = false; say(e.message, true); });
+  }
+
+  payBtn.addEventListener('click', pay);
+  call('GET', '/details').then(render).catch(function (e) { $('ref').textContent = ''; say(e.message, true); });
+})();
+</script>
+</body>
+</html>

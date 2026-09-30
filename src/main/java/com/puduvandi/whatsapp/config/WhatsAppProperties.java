@@ -40,8 +40,8 @@ public class WhatsAppProperties {
     private String apiVersion = "v21.0";
     private String baseUrl = "https://graph.facebook.com";
 
-    /** Web page that takes over payment; the booking reference is appended to it. */
-    private String paymentPageUrl = "https://puduvandi.com/pay";
+    /** Base URL of the no-login payment page (PaymentLinkController); a signed token is appended. */
+    private String paymentPageUrl = "http://localhost:8080/api/v1/pay";
 
     /** Public website, mentioned when the customer must finish something outside WhatsApp. */
     private String websiteUrl = "https://puduvandi.com";

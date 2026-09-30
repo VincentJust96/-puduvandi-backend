@@ -19,6 +19,7 @@ import com.puduvandi.whatsapp.config.WhatsAppProperties;
 import com.puduvandi.whatsapp.conversation.ConversationState;
 import com.puduvandi.whatsapp.conversation.WhatsAppSession;
 import com.puduvandi.whatsapp.conversation.WhatsAppSessionRepository;
+import com.puduvandi.whatsapp.payment.PaymentLinkService;
 import com.puduvandi.whatsapp.service.InboundMessage;
 import com.puduvandi.whatsapp.service.WhatsAppBotService;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,6 +53,7 @@ class WhatsAppBotServiceTest {
     @Mock private BookingRepository bookingRepository;
     @Mock private BookingService bookingService;
     @Mock private UserRepository userRepository;
+    @Mock private PaymentLinkService paymentLinkService;
 
     private WhatsAppProperties properties;
     private RazorpayConfig razorpayConfig;
@@ -63,7 +65,7 @@ class WhatsAppBotServiceTest {
         properties = new WhatsAppProperties();
         razorpayConfig = new RazorpayConfig();
         bot = new WhatsAppBotService(sessionRepository, client, properties, bikeRepository,
-                bookingRepository, bookingService, userRepository, razorpayConfig);
+                bookingRepository, bookingService, userRepository, razorpayConfig, paymentLinkService);
         session = new WhatsAppSession(WA_ID);
         lenient().when(sessionRepository.findByWaId(WA_ID)).thenAnswer(inv -> Optional.of(session));
         session.setId(1L);
@@ -134,7 +136,9 @@ class WhatsAppBotServiceTest {
         when(userRepository.findByPhoneNumberAndDeletedFalse("9876543210")).thenReturn(Optional.of(customer));
         BookingResponse booking = mock(BookingResponse.class);
         when(booking.status()).thenReturn(BookingStatus.PAYMENT_PENDING);
+        when(booking.id()).thenReturn(99L);
         when(booking.bookingReference()).thenReturn("PV-0001");
+        when(paymentLinkService.createLink(99L)).thenReturn("http://localhost:8080/api/v1/pay/5.nonce.sig");
         when(booking.totalAmount()).thenReturn(new BigDecimal("1300.00"));
         when(bookingService.createBooking(eq(42L), any(CreateBookingRequest.class))).thenReturn(booking);
 
@@ -144,7 +148,7 @@ class WhatsAppBotServiceTest {
         verify(bookingService).createBooking(eq(42L), request.capture());
         assertThat(request.getValue().bikeId()).isEqualTo(7L);
         assertThat(request.getValue().deliveryType()).isEqualTo("SELF_PICKUP");
-        verify(client).sendText(eq(WA_ID), contains("https://puduvandi.com/pay/PV-0001"));
+        verify(client).sendText(eq(WA_ID), contains("http://localhost:8080/api/v1/pay/5.nonce.sig"));
         assertThat(session.getState()).isEqualTo(ConversationState.START);
     }
 

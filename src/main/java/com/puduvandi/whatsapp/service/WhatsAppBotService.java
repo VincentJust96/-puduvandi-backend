@@ -23,6 +23,7 @@ import com.puduvandi.whatsapp.config.WhatsAppProperties;
 import com.puduvandi.whatsapp.conversation.ConversationState;
 import com.puduvandi.whatsapp.conversation.WhatsAppSession;
 import com.puduvandi.whatsapp.conversation.WhatsAppSessionRepository;
+import com.puduvandi.whatsapp.payment.PaymentLinkService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
@@ -68,6 +69,7 @@ public class WhatsAppBotService {
     private final BookingService bookingService;
     private final UserRepository userRepository;
     private final RazorpayConfig razorpayConfig;
+    private final PaymentLinkService paymentLinkService;
 
     public void handle(InboundMessage message) {
         String waId = message.from();
@@ -288,12 +290,12 @@ public class WhatsAppBotService {
 
             // CONFIRMED (payments in mock mode): BookingConfirmationService has already messaged them.
             if (booking.status() == BookingStatus.PAYMENT_PENDING) {
-                String link = properties.getPaymentPageUrl() + "/" + booking.bookingReference();
+                String link = paymentLinkService.createLink(booking.id());
                 client.sendText(session.getWaId(),
                         "🎉 Your bike is held for " + razorpayConfig.getPaymentExpiryMinutes() + " minutes.\n"
                                 + "Booking: " + booking.bookingReference() + "\n"
                                 + "Amount to pay: ₹" + booking.totalAmount().stripTrailingZeros().toPlainString() + "\n\n"
-                                + "Pay securely here: " + link + "\n\n"
+                                + "Pay securely here (no login needed): " + link + "\n\n"
                                 + "Once paid, your confirmation will arrive right here on WhatsApp ✅");
             }
         } catch (BusinessException | ResourceNotFoundException ex) {
