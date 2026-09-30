@@ -20,6 +20,12 @@ public interface FileStorageService {
     StoredFile store(MultipartFile file, Long uploadedByUserId, String category);
 
     /**
+     * Same as {@link #store(MultipartFile, Long, String)} for content that didn't arrive as an
+     * upload (e.g. a photo downloaded from WhatsApp).
+     */
+    StoredFile store(byte[] content, String originalFilename, String contentType, Long uploadedByUserId, String category);
+
+    /**
      * Loads the raw bytes of a stored file as a Spring {@link Resource}.
      */
     Resource loadAsResource(Long fileId);

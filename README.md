@@ -244,6 +244,23 @@ curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
 
 Use the returned `accessToken` as a Bearer token for all authenticated endpoints.
 
+### Test the WhatsApp bot locally (no Meta account)
+
+Start with `WHATSAPP_DEV_MODE=true` (and `WHATSAPP_ENABLED` left false). The webhook then accepts
+unsigned messages **from localhost only**, and every bot reply is printed in the console together
+with the reply ids of its buttons/list rows. Never set this on a public server; the app refuses to
+start if both `WHATSAPP_DEV_MODE` and `WHATSAPP_ENABLED` are true.
+
+```bash
+# A typed message (use a new "id" for every message — repeats are ignored as duplicates)
+curl -X POST http://127.0.0.1:8080/api/v1/whatsapp/webhook -H "Content-Type: application/json" \
+  -d '{"entry":[{"changes":[{"value":{"messages":[{"from":"919876543210","id":"dev-1","type":"text","text":{"body":"hi"}}]}}]}]}'
+
+# A tap on a button/list row: send the "reply id" printed in the console
+curl -X POST http://127.0.0.1:8080/api/v1/whatsapp/webhook -H "Content-Type: application/json" \
+  -d '{"entry":[{"changes":[{"value":{"messages":[{"from":"919876543210","id":"dev-2","type":"interactive","interactive":{"type":"list_reply","list_reply":{"id":"area:White Town"}}}]}}]}]}'
+```
+
 ---
 
 ## Environment Variables

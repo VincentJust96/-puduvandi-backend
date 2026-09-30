@@ -68,6 +68,17 @@ public interface BikeRepository extends JpaRepository<Bike, Long> {
         """)
     Page<Bike> findAllForAdmin(BikeVerificationStatus verificationStatus, Pageable pageable);
 
+    /** Pickup areas that currently have at least one approved, available bike (for the WhatsApp location list). */
+    @Query("""
+        SELECT DISTINCT b.area FROM Bike b
+        WHERE b.deleted = false
+          AND b.verificationStatus = com.puduvandi.common.enums.BikeVerificationStatus.APPROVED
+          AND b.status = com.puduvandi.common.enums.BikeStatus.AVAILABLE
+          AND b.area IS NOT NULL AND b.area <> ''
+        ORDER BY b.area
+        """)
+    List<String> findAvailableAreas();
+
     long countByOwnerIdAndDeletedFalse(Long ownerId);
 
     List<Bike> findByOwnerIdAndStatusAndDeletedFalse(Long ownerId, BikeStatus status);

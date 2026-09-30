@@ -9,6 +9,7 @@ import com.puduvandi.notification.client.Msg91Client;
 import com.puduvandi.notification.client.Msg91SendResult;
 import com.puduvandi.notification.entity.NotificationLog;
 import com.puduvandi.notification.repository.NotificationLogRepository;
+import com.puduvandi.whatsapp.client.WhatsAppClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,10 +22,10 @@ import java.util.List;
  * Records every SMS/WhatsApp message the platform attempts to send to
  * notification_logs, and dispatches SMS via MSG91 once it's configured.
  * <p>
- * WhatsApp has no provider wired in (Meta's WhatsApp Business template
- * approval is a separate process from India's SMS DLT registration — out of
- * scope until that's decided) — every WhatsApp send is logged as FAILED and
- * never retried, same as before. SMS dispatches via MSG91 when
+ * WhatsApp goes through the WhatsApp Business Cloud API when
+ * puduvandi.whatsapp.enabled=true (free-form text, so it only reaches customers
+ * inside Meta's 24-hour window — templates aren't built yet); while the channel
+ * is disabled, WhatsApp sends are logged as FAILED and never retried. SMS dispatches via MSG91 when
  * {@link Msg91Properties#isConfigured()} and a DLT template ID exists for the
  * given {@link NotificationPurpose}; otherwise it falls back to the same
  * no-provider stub. Never throws — failures are logged (to notification_logs
@@ -44,6 +45,7 @@ public class NotificationService {
     private final ErrorLogService errorLogService;
     private final Msg91Client msg91Client;
     private final Msg91Properties msg91Properties;
+    private final WhatsAppClient whatsAppClient;
 
     @Transactional
     public void sendSMS(Long bookingId, String customerPhone, String messageContent, NotificationPurpose purpose) {
@@ -129,12 +131,27 @@ public class NotificationService {
     // ===== Internal =====
 
     /**
-     * WhatsApp has no provider wired in — always falls back to the stub.
+     * WhatsApp dispatches via the Cloud API when that channel is enabled.
      * SMS dispatches via MSG91 once configured with a template for this purpose;
      * otherwise it falls back to the same stub as before.
      */
     private void attemptSend(NotificationLog notificationLog, String toPhone, String messageContent,
                               boolean whatsapp, NotificationPurpose purpose) {
+        if (whatsapp && whatsAppClient.isEnabled()) {
+            // Cloud API wants digits only (919876543210), not "+91…"
+            String wamid = whatsAppClient.sendText(toPhone.replace("+", ""), messageContent);
+            if (wamid != null) {
+                notificationLog.setStatus(NotificationStatus.SENT);
+                notificationLog.setProviderMessageId(wamid);
+                notificationLog.setSentAt(LocalDateTime.now());
+            } else {
+                // Retried by NotificationRetryTask (up to MAX_RETRIES)
+                notificationLog.setStatus(NotificationStatus.FAILED);
+                notificationLog.setErrorMessage("WhatsApp Cloud API send failed — see application log.");
+            }
+            notificationLogRepository.save(notificationLog);
+            return;
+        }
         if (!whatsapp && msg91Properties.isConfigured()) {
             String templateId = resolveTemplateId(purpose);
             Msg91SendResult result = msg91Client.send(toPhone, messageContent, templateId);

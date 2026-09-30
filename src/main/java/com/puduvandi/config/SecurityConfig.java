@@ -61,6 +61,10 @@ public class SecurityConfig {
 
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/v1/auth/**").permitAll()
+                // Meta's WhatsApp webhook: no JWT — the controller checks the verify token / HMAC signature
+                .requestMatchers("/api/v1/whatsapp/webhook").permitAll()
+                // WhatsApp customers' payment page: the signed single-use token in the URL is the credential
+                .requestMatchers("/api/v1/pay/**").permitAll()
                 .requestMatchers(
                     "/swagger-ui/**",
                     "/swagger-ui.html",

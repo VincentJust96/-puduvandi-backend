@@ -26,6 +26,9 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
 
     Optional<Booking> findByIdAndCustomerIdAndDeletedFalse(Long id, Long customerId);
 
+    /** Does this owner (by user id) have any booking from this customer? Gates owner access to the customer's licence. */
+    boolean existsByOwner_User_IdAndCustomer_IdAndDeletedFalse(Long ownerUserId, Long customerId);
+
     Optional<Booking> findByBookingReferenceAndDeletedFalse(String bookingReference);
 
     /** Customer's booking history */
